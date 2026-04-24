@@ -8,9 +8,19 @@ from services.ws_manager import ws_manager
 from services.virtual_exchange import virtual_exchange
 from services.bot_manager import bot_manager
 from services.auth_service import decode_token
-from services.database import get_user_by_id, db_get_signals
+from services.database import get_user_by_id, db_get_signals, get_user_by_username
 
 router = APIRouter()
+
+# ── Helper: Ambil Admin ID ──
+_admin_user_id = None
+
+def _get_admin_id() -> Optional[str]:
+    global _admin_user_id
+    if _admin_user_id is None:
+        admin = get_user_by_username(os.getenv("ADMIN_USERNAME", "admin"))
+        _admin_user_id = admin["id"] if admin else None
+    return _admin_user_id
 
 def _get_user_id(request: Request) -> Optional[str]:
     token = request.headers.get("authorization", "")
@@ -21,9 +31,19 @@ def _get_user_id(request: Request) -> Optional[str]:
     user_param = request.query_params.get("user")
     return user_param if user_param else None
 
+def _resolve_user_id(request: Request, user_query: Optional[str]) -> Optional[str]:
+    """
+    Private mode: pakai user yang login.
+    Public mode: fallback ke admin ID.
+    """
+    user_id = user_query or _get_user_id(request)
+    if user_id:
+        return user_id
+    return _get_admin_id()
+
 @router.post("/verify-pin")
 async def verify_pin(request: Request):
-    body    = await request.json()
+    body = await request.json()
     entered = str(body.get("pin", "")).strip()
     correct = str(os.getenv("BOT_PIN", "")).strip()
     if not correct:
@@ -31,10 +51,10 @@ async def verify_pin(request: Request):
     return {"ok": entered == correct}
 
 class BotConfig(BaseModel):
-    symbol:   str
-    tp_pct:   float = 0.004
-    sl_pct:   float = 0.002
-    interval: int   = 60
+    symbol: str
+    tp_pct: float = 0.004
+    sl_pct: float = 0.002
+    interval: int = 60
 
 @router.post("/start")
 async def start_bot(config: BotConfig, request: Request, user_id: Optional[str] = Depends(_get_user_id)):
@@ -59,35 +79,31 @@ async def stop_bot(request: Request, user_id: Optional[str] = Depends(_get_user_
 
 @router.get("/state")
 async def get_state(request: Request, user: Optional[str] = Query(None)):
-    user_id = user or _get_user_id(request)
+    user_id = _resolve_user_id(request, user)
     engine = bot_manager.get_engine(user_id) or bot_manager.global_engine
     return engine.get_state()
 
 @router.get("/signals")
 async def get_signals(request: Request, limit: int = 50, user: Optional[str] = Query(None)):
-    user_id = user or _get_user_id(request)
+    user_id = _resolve_user_id(request, user)
     signals = db_get_signals(user_id=user_id, limit=limit)
     return {"data": signals, "total": len(signals)}
 
 @router.get("/stats")
 async def get_stats(request: Request, user: Optional[str] = Query(None)):
-    user_id = user or _get_user_id(request)
-    
-    if user_id:
-        signals = db_get_signals(user_id=user_id, limit=10000)
-    else:
-        signals = db_get_signals(user_id=None, limit=10000)
-        
-    wins      = sum(1 for s in signals if s.get("result") == "TP")
-    losses    = sum(1 for s in signals if s.get("result") == "SL")
+    user_id = _resolve_user_id(request, user)
+    signals = db_get_signals(user_id=user_id, limit=10000)
+
+    wins = sum(1 for s in signals if s.get("result") == "TP")
+    losses = sum(1 for s in signals if s.get("result") == "SL")
     total_pct = sum(float(s.get("pnl_pct") or 0) for s in signals if s.get("result") in ("TP", "SL"))
     total_usd = sum(float(s.get("pnl_usdt") or 0) for s in signals if s.get("result") in ("TP", "SL"))
-    closed    = wins + losses
-    winrate   = round(wins / closed * 100, 2) if closed > 0 else 0.0
-    
+    closed = wins + losses
+    winrate = round(wins / closed * 100, 2) if closed > 0 else 0.0
+
     if user_id:
         user = get_user_by_id(user_id)
-        balance = user["balance"] if user else INITIAL_BALANCE
+        balance = user["balance"] if user else 1000
         leverage = user["leverage"] if user else 10
         entry_usdt = user["margin"] if user else 100
     else:
@@ -98,18 +114,18 @@ async def get_stats(request: Request, user: Optional[str] = Query(None)):
 
     return {
         "data": {
-            "trade_count":         closed,
-            "win_count":           wins,
-            "loss_count":          losses,
-            "no_trade_count":      0,
-            "winrate":             winrate,
-            "total_pnl_pct":       round(total_pct, 4),
-            "total_pnl_usdt":      round(total_usd, 4),
-            "balance":             balance,
-            "leverage":            leverage,
-            "entry_usdt":          entry_usdt,
+            "trade_count": closed,
+            "win_count": wins,
+            "loss_count": losses,
+            "no_trade_count": 0,
+            "winrate": winrate,
+            "total_pnl_pct": round(total_pct, 4),
+            "total_pnl_usdt": round(total_usd, 4),
+            "balance": balance,
+            "leverage": leverage,
+            "entry_usdt": entry_usdt,
             "active_signal_count": sum(1 for s in signals if s.get("status") == "OPEN"),
-            "max_active_signals":  int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
+            "max_active_signals": int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
         }
     }
 
@@ -123,24 +139,24 @@ async def reset_stats(request: Request, user_id: Optional[str] = Depends(_get_us
     else:
         bot_manager.global_engine.reset_stats()
         virtual_exchange.reset()
-        
+
     await ws_manager.broadcast("reset_all", {
-        "trade_count":         0,
-        "win_count":           0,
-        "loss_count":          0,
-        "no_trade_count":      0,
-        "total_pnl_pct":       0.0,
-        "total_pnl_usdt":      0.0,
-        "balance":             virtual_exchange.get_info(user_id)["balance"],
-        "signals":             [],
+        "trade_count": 0,
+        "win_count": 0,
+        "loss_count": 0,
+        "no_trade_count": 0,
+        "total_pnl_pct": 0.0,
+        "total_pnl_usdt": 0.0,
+        "balance": virtual_exchange.get_info(user_id)["balance"],
+        "signals": [],
         "active_signal_count": 0,
-        "timestamp":           int(time.time() * 1000),
+        "timestamp": int(time.time() * 1000),
     })
     return {"ok": True}
 
 @router.get("/balance")
 async def get_balance(request: Request, user: Optional[str] = Query(None)):
-    user_id = user or _get_user_id(request)
+    user_id = _resolve_user_id(request, user)
     return {"data": virtual_exchange.get_info(user_id)}
 
 @router.websocket("/ws")
@@ -155,23 +171,23 @@ async def websocket_endpoint(ws: WebSocket):
 @router.get("/status/debug")
 async def debug_status(request: Request, user_id: Optional[str] = Depends(_get_user_id)):
     engine = bot_manager.get_engine(user_id) or bot_manager.global_engine
-    wins   = engine.state["win_count"]
+    wins = engine.state["win_count"]
     losses = engine.state["loss_count"]
     closed = wins + losses
     active = engine._active_count()
     return {
-        "running":      engine.running,
-        "task_exists":  engine._task is not None,
-        "task_done":    engine._task.done()      if engine._task else None,
+        "running": engine.running,
+        "task_exists": engine._task is not None,
+        "task_done": engine._task.done() if engine._task else None,
         "task_cancelled": engine._task.cancelled() if engine._task else None,
-        "balance":      virtual_exchange.get_info(user_id)["balance"],
+        "balance": virtual_exchange.get_info(user_id)["balance"],
         "state_summary": {
-            "status":              engine.state["status"],
-            "trade_count":         closed,
-            "win_count":           wins,
-            "loss_count":          losses,
-            "winrate":             round(wins / closed * 100, 2) if closed > 0 else 0.0,
+            "status": engine.state["status"],
+            "trade_count": closed,
+            "win_count": wins,
+            "loss_count": losses,
+            "winrate": round(wins / closed * 100, 2) if closed > 0 else 0.0,
             "active_signal_count": active,
-            "max_active_signals":  int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
+            "max_active_signals": int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
         },
     }
