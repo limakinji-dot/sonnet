@@ -7,32 +7,10 @@ from typing import Optional
 from services.ws_manager import ws_manager
 from services.virtual_exchange import virtual_exchange
 from services.bot_manager import bot_manager
-from services.auth_service import decode_token
-from services.database import get_user_by_id, db_get_signals, get_user_by_username, list_users
+from services.auth_service import decode_token, get_admin_id
+from services.database import get_user_by_id, db_get_signals
 
 router = APIRouter()
-
-# ── Helper: Ambil Admin ID dengan fallback ──
-_admin_user_id = None
-
-def _get_admin_id() -> Optional[str]:
-    global _admin_user_id
-    if _admin_user_id is None:
-        admin_username = os.getenv("ADMIN_USERNAME", "admin")
-        admin = get_user_by_username(admin_username)
-        if admin:
-            _admin_user_id = admin["id"]
-        else:
-            # 🔥 Fallback: cari user mana pun yang is_admin=1
-            users = list_users()
-            for u in users:
-                if u.get("is_admin"):
-                    _admin_user_id = u["id"]
-                    print(f"[Auth] Fallback admin found: {u['username']} ({_admin_user_id})")
-                    break
-            if _admin_user_id is None:
-                print(f"[Auth] CRITICAL: No admin user found! Checked username: {admin_username}")
-    return _admin_user_id
 
 def _get_user_id(request: Request) -> Optional[str]:
     token = request.headers.get("authorization", "")
@@ -44,14 +22,10 @@ def _get_user_id(request: Request) -> Optional[str]:
     return user_param if user_param else None
 
 def _resolve_user_id(request: Request, user_query: Optional[str]) -> Optional[str]:
-    """
-    Private mode: pakai user yang login.
-    Public mode: fallback ke admin ID.
-    """
     user_id = user_query or _get_user_id(request)
     if user_id:
         return user_id
-    return _get_admin_id()
+    return get_admin_id()
 
 @router.post("/verify-pin")
 async def verify_pin(request: Request):
