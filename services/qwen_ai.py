@@ -7,7 +7,6 @@ Features:
  • Vision — sends candlestick chart PNG per timeframe alongside OHLCV text
  • Charts generated server-side with matplotlib (non-interactive Agg backend)
  • Auto token refresh via GET /v1/refresh on 401
- • Win-rate & trade-history aware — AI knows current performance stats
  • Multi-target output: TP1, TP2, MAX
 
 Railway env vars:
@@ -34,7 +33,7 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from services.ai_lock import ai_lock  # ← FIX: was missing, caused NameError on ai_lock()
+from services.ai_lock import ai_lock
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _GATEWAY = os.getenv("QWEN_BASE_URL", "https://qwen-web-gateway.onrender.com")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.6-plus")
-QWEN_THINKING = os.getenv("QWEN_THINKING_MODE", "Thinking")  # Auto | Thinking | Fast
+QWEN_THINKING = os.getenv("QWEN_THINKING_MODE", "Thinking")
 
 CHAT_URL = f"{_GATEWAY}/v1/openai/chat/completions"
 REFRESH_URL = f"{_GATEWAY}/v1/refresh"
@@ -53,7 +52,7 @@ REFRESH_URL = f"{_GATEWAY}/v1/refresh"
 # ---------------------------------------------------------------------------
 try:
     import matplotlib
-    matplotlib.use("Agg")  # must be set BEFORE importing pyplot
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     HAS_CHARTS = True
     logger.info("matplotlib loaded — candlestick charts enabled")
@@ -65,14 +64,11 @@ except ImportError:
 
 
 def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
-    """
-    Render a dark-theme OHLCV candlestick + volume chart.
-    Returns base64-encoded PNG string, or None on any error.
-    """
+    """Render a dark-theme OHLCV candlestick + volume chart."""
     if not HAS_CHARTS or not candles:
         return None
 
-    data = candles[-150:]  # matches CANDLE_LIMIT
+    data = candles[-150:]
     n = len(data)
 
     try:
@@ -93,11 +89,7 @@ def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
 
             bull = close >= o
             color = "#26a69a" if bull else "#ef5350"
-
-            # wick
             ax1.plot([i, i], [l, h], color=color, linewidth=0.6, zorder=1)
-
-            # body — guarantee a minimum visible height
             body_y = min(o, close)
             body_h = max(abs(close - o), (h - l) * 0.004)
             ax1.add_patch(
@@ -106,11 +98,8 @@ def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
                     color=color, linewidth=0, zorder=2,
                 )
             )
-
-            # volume
             ax2.bar(i, vol, color=color, alpha=0.72, width=0.8)
 
-        # ── styling ──────────────────────────────────────────────────
         ax1.set_title(
             f"{symbol} · {tf} · {n} candles",
             color="#e0e0e0", fontsize=10, pad=6,
@@ -148,7 +137,6 @@ def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
 
 
 def _generate_all_charts(candles_by_tf: dict, symbol: str) -> Dict[str, str]:
-    """Render charts for every timeframe available. Returns {tf: base64_png}."""
     result = {}
     for tf, candles in candles_by_tf.items():
         img = _draw_chart(candles, symbol, tf)
@@ -158,7 +146,7 @@ def _generate_all_charts(candles_by_tf: dict, symbol: str) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# System prompt — strategy rules + performance awareness
+# System prompt — strategy rules (CORE UNCHANGED) + TP1/TP2/MAX addition
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """You are an AI trained to mimic a specific trading strategy based on example data.
 
@@ -249,24 +237,6 @@ MULTI-TARGET RULE (TP1 / TP2 / MAX):
 - For SHORT: TP1 > TP2 > MAX (all below entry)
 
 ---
-SL+ (STOP-LOSS PLUS) TRIGGER RULE:
-- When price hits TP1 and position is in PROFIT → AI should set a "sl_trigger_price"
-- This is the price level where, if reached, the monitor AI should move SL to breakeven or better
-- sl_trigger_price is NOT the SL itself — it is the TRIGGER level for the monitor to act
-- For LONG: sl_trigger_price should be slightly above TP1 (to confirm TP1 is "hit")
-- For SHORT: sl_trigger_price should be slightly below TP1
-- If no clear TP1 hit scenario → set sl_trigger_price to null
-
----
-PERFORMANCE AWARENESS RULE:
-- You will receive current win-rate, total trades, and recent trade history
-- If win-rate is low (< 50%) → be MORE SELECTIVE. Only take A+ setups.
-- If win-rate is high (> 65%) → you can be slightly more aggressive, but still follow rules.
-- If recent streak is losses → tighten criteria, wait for perfect void.
-- If recent streak is wins → stay disciplined, don't get overconfident.
-- Your decision must ALWAYS be based on chart structure first, stats second.
-
----
 TRAINING DATA:
 
 [
@@ -298,45 +268,6 @@ TRAINING DATA:
 
 
 # ---------------------------------------------------------------------------
-# Helper: format trade history for prompt
-# ---------------------------------------------------------------------------
-def _fmt_history(signals: list, limit: int = 10) -> str:
-    """Format recent closed signals into a compact text block."""
-    if not signals:
-        return "No recent trade history."
-    lines = [f"Last {min(len(signals), limit)} closed trades:"]
-    for s in signals[:limit]:
-        result = s.get("result", "?")
-        sym = s.get("symbol", "?")
-        dec = s.get("decision", "?")
-        pnl = s.get("pnl_pct", 0)
-        conf = s.get("confidence", 0)
-        sign = "+" if pnl >= 0 else ""
-        emoji = "🟢" if result == "TP" else "🔴" if result == "SL" else "⚪"
-        lines.append(
-            f"  {emoji} {sym} {dec} → {result} | PnL: {sign}{pnl:.2f}% | Conf: {conf}%"
-        )
-    return "\n".join(lines)
-
-
-def _fmt_stats(stats: dict) -> str:
-    """Format performance stats into a compact text block."""
-    if not stats:
-        return "No performance stats available."
-    total = stats.get("trade_count", 0)
-    wins = stats.get("win_count", 0)
-    losses = stats.get("loss_count", 0)
-    wr = stats.get("winrate", 0)
-    total_pnl = stats.get("total_pnl_pct", 0)
-    sign = "+" if total_pnl >= 0 else ""
-    return (
-        f"Performance Stats:\n"
-        f"  Total Trades: {total} | Wins: {wins} | Losses: {losses}\n"
-        f"  Win Rate: {wr}% | Total PnL: {sign}{total_pnl:.2f}%"
-    )
-
-
-# ---------------------------------------------------------------------------
 # Single-token Qwen client
 # ---------------------------------------------------------------------------
 
@@ -349,9 +280,6 @@ class QwenAIClient:
         self._tag = f"[QW-{slot}]"
         self.client = httpx.AsyncClient(timeout=240)
 
-    # ------------------------------------------------------------------
-    # Token refresh (called automatically on 401)
-    # ------------------------------------------------------------------
     async def _refresh(self) -> bool:
         """Ask the gateway to silently renew the session token."""
         try:
@@ -372,21 +300,16 @@ class QwenAIClient:
             logger.warning(f"{self._tag} Token refresh failed: {e}")
         return False
 
-    # ------------------------------------------------------------------
-    # Main analysis method
-    # ------------------------------------------------------------------
     async def analyze(
         self,
         symbol: str,
         candles_by_tf: dict,
         current_price: float = None,
-        stats: dict = None,
-        history_signals: list = None,
     ) -> dict:
         tag = self._tag
         logger.info(f"{tag} Starting analysis for {symbol}")
 
-        # ── 1. Generate candlestick charts (CPU → thread pool) ────────
+        # ── 1. Generate candlestick charts ────────
         loop = asyncio.get_event_loop()
         charts: Dict[str, str] = {}
         try:
@@ -396,7 +319,7 @@ class QwenAIClient:
             if charts:
                 print(f"{tag} 📊 {symbol} charts ready: {list(charts.keys())}")
             else:
-                print(f"{tag} ⚠️ {symbol} charts skipped (matplotlib missing or no candles)")
+                print(f"{tag} ⚠️ {symbol} charts skipped")
         except Exception as e:
             logger.warning(f"{tag} Chart generation error for {symbol}: {e}")
 
@@ -420,10 +343,6 @@ class QwenAIClient:
         live_price = current_price if (current_price and current_price > 0) else last_candle_price
         ohlcv_text = "\n\n".join(tf_blocks) if tf_blocks else "No candle data available."
 
-        # ── 2b. Build performance context ─────────────────────────────
-        stats_text = _fmt_stats(stats)
-        history_text = _fmt_history(history_signals)
-
         prompt_text = f"""Analyze {symbol}
 
 {ohlcv_text}
@@ -436,12 +355,6 @@ Cross-reference: what you see visually in the charts should match the OHLCV numb
 
 ⚠️ CURRENT REALTIME PRICE: {live_price}
 (This is the live ticker price — use it as the reference for entry placement)
-
----
-PERFORMANCE CONTEXT (use this to calibrate confidence):
-{stats_text}
-
-{history_text}
 
 ---
 VOID POSITION RULE (CRITICAL):
@@ -467,7 +380,6 @@ Respond in this EXACT JSON format ONLY — no preamble, no markdown:
   "tp2": <number>,
   "tp_max": <number>,
   "sl": <number>,
-  "sl_trigger_price": <number or null>,
   "invalidation": <number>,
   "reason": "short explanation referencing the void/wick imbalance",
   "confidence": <0-100>
@@ -480,29 +392,19 @@ TP RULES:
 - For LONG: entry < tp1 < tp2 < tp_max
 - For SHORT: entry > tp1 > tp2 > tp_max
 
-SL_TRIGGER_PRICE RULES:
-- If you expect price to hit tp1 and then want SL moved to breakeven → set sl_trigger_price slightly beyond tp1
-- For LONG: sl_trigger_price > tp1 (above tp1 to confirm hit)
-- For SHORT: sl_trigger_price < tp1 (below tp1 to confirm hit)
-- If no such scenario → set to null
-
 If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a trade."""
 
-        # ── 3. Compose message with images first, then text ───────────
+        # ── 3. Compose message ───────────
         content = []
-
-        # Chart images (one per timeframe — in order 5m → 4h)
         for tf in ["5m", "15m", "30m", "1h", "4h"]:
             if tf in charts:
                 content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/png;base64,{charts[tf]}"},
                 })
-
-        # OHLCV text + instructions
         content.append({"type": "text", "text": prompt_text})
 
-        # ── 4. Call Qwen API (retry once after token refresh) ─────────
+        # ── 4. Call Qwen API ─────────
         payload = {
             "model": QWEN_MODEL,
             "messages": [
@@ -534,7 +436,6 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                         logger.warning(f"{tag} 401 Unauthorized for {symbol} — trying token refresh")
                         print(f"{tag} 🔑 Token expired — refreshing...")
                         if attempt == 0 and await self._refresh():
-                            # update header and retry
                             continue
                         return self._no_trade("Auth failed (401) even after refresh")
 
@@ -547,7 +448,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                         return self._no_trade(f"HTTP {resp.status_code}")
 
                     data = resp.json()
-                    break  # ← success, exit retry loop
+                    break
 
                 except httpx.TimeoutException:
                     logger.error(f"{tag} Timeout for {symbol}")
@@ -567,14 +468,6 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                 .get("content", "")
                 or ""
             )
-            # Some implementations put thinking in a separate field
-            if not full_text:
-                full_text = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("reasoning_content", "")
-                    or ""
-                )
         except Exception:
             return self._no_trade("Failed to extract response content")
 
@@ -584,7 +477,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
         if not full_text.strip():
             return self._no_trade("Empty AI response")
 
-        # ── 6. Parse JSON from response ───────────────────────────────
+        # ── 6. Parse JSON ───────────────────────────────
         start = full_text.find("{")
         end = full_text.rfind("}") + 1
 
@@ -612,9 +505,8 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
             "tp1": result.get("tp1"),
             "tp2": result.get("tp2"),
             "tp_max": result.get("tp_max"),
-            "tp": result.get("tp1"),  # backward compat
+            "tp": result.get("tp1"),
             "sl": result.get("sl"),
-            "sl_trigger_price": result.get("sl_trigger_price"),
             "invalidation": result.get("invalidation"),
             "reason": result.get("reason", ""),
             "confidence": int(result.get("confidence", 0)),
@@ -624,13 +516,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
             f"{tag} ✅ {symbol} → {decision} "
             f"entry={parsed['entry']} tp1={parsed['tp1']} tp2={parsed['tp2']} max={parsed['tp_max']} conf={parsed['confidence']}%"
         )
-        logger.info(
-            f"{tag} Signal parsed for {symbol}: "
-            f"decision={decision} entry={parsed['entry']} tp1={parsed['tp1']} tp2={parsed['tp2']} max={parsed['tp_max']} confidence={parsed['confidence']}"
-        )
         return parsed
-
-    # ------------------------------------------------------------------
 
     def _no_trade(self, reason: str) -> dict:
         logger.warning(f"{self._tag} NO TRADE — {reason}")
@@ -644,7 +530,6 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
             "tp_max": None,
             "tp": None,
             "sl": None,
-            "sl_trigger_price": None,
             "invalidation": None,
             "reason": reason,
             "confidence": 0,
@@ -655,25 +540,13 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
 
 
 # ---------------------------------------------------------------------------
-# Parallel wrapper — manages up to 5 tokens
+# Parallel wrapper
 # ---------------------------------------------------------------------------
 
 class ParallelQwenAI:
-    """
-    Manages up to 5 QwenAIClient instances.
-
-    analyze_batch(items):
-    Each item gets its own client (modulo assignment → round-robin).
-    All items run concurrently — same parallel behaviour as the old
-    ParallelDeepSeekAI.analyze_batch().
-
-    analyze(symbol, candles_by_tf):
-    Legacy single-symbol call; uses the next client in round-robin order.
-    """
-
     def __init__(self):
         self.clients: List[QwenAIClient] = []
-        self._rr_idx = 0  # round-robin counter
+        self._rr_idx = 0
 
         for slot in range(1, 6):
             token = os.getenv(f"QWEN_TOKEN_{slot}", "").strip()
@@ -681,8 +554,6 @@ class ParallelQwenAI:
                 self.clients.append(QwenAIClient(token=token, slot=slot))
                 logger.info(f"[ParallelQwen] Token slot {slot} registered")
                 print(f"[ParallelQwen] ✅ Token {slot} loaded")
-            else:
-                logger.debug(f"[ParallelQwen] QWEN_TOKEN_{slot} not set — skipped")
 
         if not self.clients:
             logger.error("[ParallelQwen] No tokens configured! Set QWEN_TOKEN_1 at minimum.")
@@ -694,18 +565,7 @@ class ParallelQwenAI:
                 f"charts={'ON' if HAS_CHARTS else 'OFF (install matplotlib)'}"
             )
 
-    # ------------------------------------------------------------------
-    # Batch — parallel, order-preserving
-    # ------------------------------------------------------------------
     async def analyze_batch(self, items: list) -> list:
-        """
-        Analyze a list of symbols concurrently.
-
-        items : list of (symbol, candles_by_tf) or
-                (symbol, candles_by_tf, current_price) or
-                (symbol, candles_by_tf, current_price, stats, history_signals)
-        Returns results in the SAME ORDER as input items.
-        """
         if not self.clients:
             return [self._no_trade("No tokens configured")] * len(items)
 
@@ -714,36 +574,26 @@ class ParallelQwenAI:
             sym = item[0]
             tfs = item[1]
             price = item[2] if len(item) > 2 else None
-            stats = item[3] if len(item) > 3 else None
-            history = item[4] if len(item) > 4 else None
-            client = self.clients[i % len(self.clients)]  # round-robin
-            tasks.append(asyncio.create_task(client.analyze(sym, tfs, price, stats, history)))
+            client = self.clients[i % len(self.clients)]
+            tasks.append(asyncio.create_task(client.analyze(sym, tfs, price)))
 
-        # asyncio.gather preserves order
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return [
             r if isinstance(r, dict) else self._no_trade(f"Task exception: {r}")
             for r in results
         ]
 
-    # ------------------------------------------------------------------
-    # Single (legacy / backward compat)
-    # ------------------------------------------------------------------
     async def analyze(
         self,
         symbol: str,
         candles_by_tf: dict,
         current_price: float = None,
-        stats: dict = None,
-        history_signals: list = None,
     ) -> dict:
         if not self.clients:
             return self._no_trade("No tokens configured")
         client = self.clients[self._rr_idx % len(self.clients)]
         self._rr_idx += 1
-        return await client.analyze(symbol, candles_by_tf, current_price, stats, history_signals)
-
-    # ------------------------------------------------------------------
+        return await client.analyze(symbol, candles_by_tf, current_price)
 
     def _no_trade(self, reason: str) -> dict:
         return {
@@ -756,7 +606,6 @@ class ParallelQwenAI:
             "tp_max": None,
             "tp": None,
             "sl": None,
-            "sl_trigger_price": None,
             "invalidation": None,
             "reason": reason,
             "confidence": 0,
@@ -767,7 +616,4 @@ class ParallelQwenAI:
             await client.close()
 
 
-# ---------------------------------------------------------------------------
-# Singleton — drop-in replacement for: from services.deepseek_ai import deepseek_ai
-# ---------------------------------------------------------------------------
 qwen_ai = ParallelQwenAI()
