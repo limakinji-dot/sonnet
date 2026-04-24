@@ -1,14 +1,12 @@
 """
 Position Monitor AI — HOLD or CLOSE untuk posisi yang sudah entry.
 
-Perbedaan dari versi sebelumnya:
- - Hanya 1 token (MONITOR_TOKEN_1, atau fallback ke QWEN_TOKEN_1)
- - Pakai ai_lock() agar tidak bentrok dengan analysis AI
- - Retry terus sampai dapat HOLD/CLOSE/SL+ yang valid
- - Menyertakan opened_at, original_prompt, dan original_ai_response
-   agar AI monitor tahu kapan posisi dibuka dan apa thesis aslinya.
- - WIN-RATE & TRADE-HISTORY aware — AI monitor tahu performa bot saat ini
- - SL+ enhanced: trigger SL+ ketika TP1 sudah tercapai dan PnL positif
+Features:
+ • Hanya 1 token (MONITOR_TOKEN_1, atau fallback ke QWEN_TOKEN_1)
+ • Pakai ai_lock() agar tidak bentrok dengan analysis AI
+ • Retry terus sampai dapat HOLD/CLOSE/SL+ yang valid
+ • Menyertakan opened_at, original_prompt, dan original_ai_response
+ • SL+ enhanced: trigger SL+ ketika TP1 sudah tercapai dan PnL positif
 
 Env vars:
  MONITOR_TOKEN_1 — bearer token khusus monitor
@@ -53,40 +51,7 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Helper: format stats & history for prompt
-# ---------------------------------------------------------------------------
-def _fmt_stats(stats: dict) -> str:
-    if not stats:
-        return "No performance stats."
-    total = stats.get("trade_count", 0)
-    wins = stats.get("win_count", 0)
-    losses = stats.get("loss_count", 0)
-    wr = stats.get("winrate", 0)
-    total_pnl = stats.get("total_pnl_pct", 0)
-    sign = "+" if total_pnl >= 0 else ""
-    return (
-        f"Bot Performance: {total} trades | {wins}W / {losses}L | "
-        f"WR: {wr}% | Total PnL: {sign}{total_pnl:.2f}%"
-    )
-
-
-def _fmt_history(signals: list, limit: int = 5) -> str:
-    if not signals:
-        return "No recent history."
-    lines = [f"Recent {min(len(signals), limit)} closed trades:"]
-    for s in signals[:limit]:
-        result = s.get("result", "?")
-        sym = s.get("symbol", "?")
-        dec = s.get("decision", "?")
-        pnl = s.get("pnl_pct", 0)
-        sign = "+" if pnl >= 0 else ""
-        emoji = "🟢" if result == "TP" else "🔴"
-        lines.append(f"  {emoji} {sym} {dec} → {result} | PnL: {sign}{pnl:.2f}%")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# System prompt — position management with WR/history awareness
+# System prompt — position management with SL+ addition
 # ---------------------------------------------------------------------------
 POSITION_SYSTEM_PROMPT = """You are a position management AI for a crypto futures trading bot.
 
@@ -96,7 +61,6 @@ You will receive:
  2. The exact prompt the analysis AI received when it decided to enter this trade
  3. The analysis AI's full response that justified the entry
  4. The current position status and latest candle data
- 5. BOT PERFORMANCE STATS (win-rate, recent trades) — use this to calibrate risk tolerance
 
 CRITICAL TIME AWARENESS:
 - "OPENED AT" tells you how long this trade has been running.
@@ -106,12 +70,6 @@ CRITICAL TIME AWARENESS:
   Your job is to judge whether that thesis is STILL VALID, not whether the current price looks scary.
 - Price naturally moves against a new position briefly before reaching TP — do NOT mistake normal
   volatility for thesis invalidation.
-
-WIN-RATE CALIBRATION:
-- If bot WR is HIGH (> 60%) → trust the original thesis more, be patient.
-- If bot WR is LOW (< 45%) → be more defensive, consider closing earlier if thesis weakens.
-- If recent streak is losses → prioritize capital preservation, don't let losers run.
-- If recent streak is wins → stay disciplined, don't get greedy.
 
 You have THREE possible decisions:
 
@@ -166,7 +124,6 @@ Rules:
 
 
 def _fmt_ts(ts_ms: Optional[int]) -> str:
-    """Format a millisecond timestamp to a human-readable UTC string."""
     if not ts_ms:
         return "unknown"
     try:
@@ -177,7 +134,6 @@ def _fmt_ts(ts_ms: Optional[int]) -> str:
 
 
 def _elapsed(opened_at_ms: Optional[int]) -> str:
-    """Return human-readable elapsed time since position opened."""
     if not opened_at_ms:
         return "unknown"
     try:
@@ -237,8 +193,6 @@ class PositionAIClient:
         original_prompt: Optional[str] = None,
         original_ai_response: Optional[str] = None,
         sl_plus_history: Optional[list] = None,
-        stats: dict = None,
-        history_signals: list = None,
         tp1: float = None,
     ) -> Optional[dict]:
         if direction == "LONG":
@@ -297,16 +251,12 @@ class PositionAIClient:
                 prompt_preview = original_prompt[:2000]
                 if len(original_prompt) > 2000:
                     prompt_preview += "\n... [truncated]"
-                parts.append(
-                    f"\n[MY PROMPT TO ANALYSIS AI]\n{prompt_preview}"
-                )
+                parts.append(f"\n[MY PROMPT TO ANALYSIS AI]\n{prompt_preview}")
             if original_ai_response:
                 response_preview = original_ai_response[:2000]
                 if len(original_ai_response) > 2000:
                     response_preview += "\n... [truncated]"
-                parts.append(
-                    f"\n[ANALYSIS AI RESPONSE]\n{response_preview}"
-                )
+                parts.append(f"\n[ANALYSIS AI RESPONSE]\n{response_preview}")
             parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
             conversation_block = "\n".join(parts)
 
@@ -323,13 +273,8 @@ class PositionAIClient:
                 at_str = _fmt_ts(at_ms) if at_ms else "unknown"
                 if i == 0:
                     original_sl = frm
-                lines.append(
-                    f" Move #{i+1}: SL {frm} → {to} "
-                    f"(price was {px} at {at_str})"
-                )
-            lines.append(
-                f" Original SL: {original_sl} Current SL (after all moves): {sl}"
-            )
+                lines.append(f" Move #{i+1}: SL {frm} → {to} (price was {px} at {at_str})")
+            lines.append(f" Original SL: {original_sl} Current SL (after all moves): {sl}")
             lines.append(
                 " NOTE: The current Stop Loss shown below already reflects these moves.\n"
                 " If you choose SL+ again, provide a new_sl that is BETTER than the current SL.\n"
@@ -337,10 +282,6 @@ class PositionAIClient:
             )
             lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
             sl_plus_block = "\n".join(lines)
-
-        # ── Build performance stats block ──────────────────────────────
-        stats_text = _fmt_stats(stats)
-        history_text = _fmt_history(history_signals)
 
         # ── Build OHLCV blocks ─────────────────────────────────────────
         ohlcv_blocks = []
@@ -358,10 +299,6 @@ class PositionAIClient:
             f"{orig_block}"
             f"{conversation_block}\n"
             f"{sl_plus_block}"
-            f"━━━ BOT PERFORMANCE CONTEXT ━━━\n"
-            f"{stats_text}\n"
-            f"{history_text}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"━━━ CURRENT POSITION STATUS ━━━\n"
             f" Symbol: {symbol}\n"
             f" Direction: {direction}\n"
@@ -527,8 +464,6 @@ class PositionMonitorAI:
         original_prompt: Optional[str] = None,
         original_ai_response: Optional[str] = None,
         sl_plus_history: Optional[list] = None,
-        stats: dict = None,
-        history_signals: list = None,
         tp1: float = None,
         max_retries: int = 999,
     ) -> dict:
@@ -552,8 +487,6 @@ class PositionMonitorAI:
                 original_prompt=original_prompt,
                 original_ai_response=original_ai_response,
                 sl_plus_history=sl_plus_history,
-                stats=stats,
-                history_signals=history_signals,
                 tp1=tp1,
             )
             if result and result.get("decision") in ("HOLD", "CLOSE", "SL+"):
