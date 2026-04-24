@@ -7,21 +7,24 @@ import React, {
   useEffect,
   useCallback,
 } from "react";
-import {
-  getSession,
-  clearSession,
-  validatePasskey,
-  setSession,
-  seedDefaultUser,
-  getCurrentUser,
-  UserAccount,
-} from "@/lib/auth";
+import { login as apiLogin, getMe, removeToken, getToken, setToken } from "@/lib/api";
+
+export interface UserAccount {
+  id: string;
+  username: string;
+  is_admin: boolean;
+  leverage: number;
+  margin: number;
+  balance: number;
+  initial_balance: number;
+}
 
 interface AuthContextType {
   isAuthenticated: boolean;
   username: string | null;
   userId: string | null;
   userData: UserAccount | null;
+  isAdmin: boolean;
   login: (
     username: string,
     passkey: string
@@ -37,59 +40,95 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [username, setUsername] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [userData, setUserData] = useState<UserAccount | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  const refreshUser = useCallback(() => {
-    const session = getSession();
-    if (session) {
-      const user = getCurrentUser();
-      setIsAuthenticated(true);
-      setUsername(session.username);
-      setUserId(session.userId);
-      setUserData(user);
-    } else {
+  const refreshUser = useCallback(async () => {
+    const token = getToken();
+    if (!token) {
       setIsAuthenticated(false);
       setUsername(null);
       setUserId(null);
       setUserData(null);
+      setIsAdmin(false);
+      return;
+    }
+
+    try {
+      const data = await getMe();
+      if (data && data.id) {
+        setIsAuthenticated(true);
+        setUsername(data.username);
+        setUserId(data.id);
+        setUserData(data);
+        setIsAdmin(data.is_admin);
+        if (typeof window !== "undefined") {
+          localStorage.setItem("agent-x-user", JSON.stringify(data));
+        }
+      } else {
+        throw new Error("Invalid user data");
+      }
+    } catch {
+      removeToken();
+      setIsAuthenticated(false);
+      setUsername(null);
+      setUserId(null);
+      setUserData(null);
+      setIsAdmin(false);
     }
   }, []);
 
   useEffect(() => {
-    seedDefaultUser();
+    // Coba restore dari localStorage dulu buat instant UI
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("agent-x-user");
+      const token = getToken();
+      if (saved && token) {
+        try {
+          const parsed = JSON.parse(saved);
+          setUserData(parsed);
+          setUsername(parsed.username);
+          setUserId(parsed.id);
+          setIsAdmin(parsed.is_admin);
+          setIsAuthenticated(true);
+        } catch {
+          localStorage.removeItem("agent-x-user");
+        }
+      }
+    }
+    // Lalu fetch fresh dari server
     refreshUser();
   }, [refreshUser]);
 
   const login = useCallback(
     async (username: string, passkey: string) => {
-      const user = validatePasskey(username, passkey);
-      if (!user) {
-        return {
-          success: false,
-          error:
-            "Invalid username or passkey. Contact @realsonnet to register your account.",
-        };
+      try {
+        const data = await apiLogin(username, passkey);
+        if (data.success) {
+          setIsAuthenticated(true);
+          setUsername(data.user.username);
+          setUserId(data.user.id);
+          setUserData(data.user);
+          setIsAdmin(data.user.is_admin);
+          return { success: true };
+        }
+        return { success: false, error: data.detail || "Login failed" };
+      } catch (e: any) {
+        return { success: false, error: e.message || "Network error" };
       }
-
-      const session = {
-        userId: user.id,
-        username: user.username,
-        token: `mock-token-${Date.now()}`,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-      };
-
-      setSession(session);
-      refreshUser();
-      return { success: true };
     },
-    [refreshUser]
+    []
   );
 
   const logout = useCallback(() => {
-    clearSession();
+    removeToken();
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("agent-x-user");
+    }
     setIsAuthenticated(false);
     setUsername(null);
     setUserId(null);
     setUserData(null);
+    setIsAdmin(false);
     window.location.href = "/";
   }, []);
 
@@ -100,6 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         username,
         userId,
         userData,
+        isAdmin,
         login,
         logout,
         refreshUser,
