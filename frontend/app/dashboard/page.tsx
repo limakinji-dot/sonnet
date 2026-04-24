@@ -14,7 +14,7 @@ import Link from "next/link";
 
 export default function DashboardPage() {
   const { isAuthenticated, username, isAdmin, logout } = useAuth();
-  const { state } = useTrading();
+  const { state, balance } = useTrading();
   const router = useRouter();
 
   // ── Admin Register State ──
@@ -59,6 +59,10 @@ export default function DashboardPage() {
       setRegLoading(false);
     }
   };
+
+  // Format balance dengan comma
+  const fmtBalance = (n: number) =>
+    n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
   return (
     <main className="relative min-h-screen bg-[#030303] pt-20 sm:pt-24 pb-16 sm:pb-20 px-3 sm:px-6 lg:px-8">
@@ -112,9 +116,25 @@ export default function DashboardPage() {
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 mb-6 sm:mb-8"
+          className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3 mb-6 sm:mb-8"
         >
           {[
+            {
+              label: "BALANCE",
+              value: `$${fmtBalance(balance.balance)}`,
+              color: "#d4a847",
+              highlight: true,
+            },
+            {
+              label: "INITIAL",
+              value: `$${fmtBalance(balance.initial_balance)}`,
+              color: "#fff",
+            },
+            {
+              label: "LEVERAGE",
+              value: `${balance.leverage}x`,
+              color: "#60a5fa",
+            },
             {
               label: "TOTAL TRADES",
               value: state.trade_count,
@@ -129,19 +149,18 @@ export default function DashboardPage() {
               value: state.loss_count,
               color: "#f87171",
             },
-            {
-              label: "TOTAL PnL",
-              value: `${state.total_pnl_pct >= 0 ? "+" : ""}${state.total_pnl_pct.toFixed(2)}%`,
-              color: state.total_pnl_pct >= 0 ? "#4ade80" : "#f87171",
-            },
           ].map((stat) => (
             <div
               key={stat.label}
-              className="glass rounded-xl p-3 sm:p-5 text-center"
+              className={`glass rounded-xl p-3 sm:p-4 text-center ${
+                stat.highlight ? "border border-[#d4a847]/30 bg-[#d4a847]/5" : ""
+              }`}
             >
               <div
-                className="text-lg sm:text-2xl font-bold font-mono mb-1"
-                style={{ color: stat.color || "#fff" }}
+                className={`text-base sm:text-lg lg:text-xl font-bold font-mono mb-1 ${
+                  stat.highlight ? "text-[#d4a847]" : ""
+                }`}
+                style={{ color: stat.highlight ? undefined : stat.color || "#fff" }}
               >
                 {stat.value}
               </div>
