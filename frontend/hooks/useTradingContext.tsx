@@ -103,10 +103,13 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthenticated, userData]);
 
-  // WebSocket connection — kirim user_id kalau authenticated
+  // WebSocket connection — connect ke backend langsung
   useEffect(() => {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${proto}//${window.location.host}/api/bot/ws`;
+    // WebSocket HARUS connect ke backend langsung (tidak bisa lewat Next.js rewrite)
+    const wsHost = "web-production-e78a1.up.railway.app";
+    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProto}//${wsHost}/api/bot/ws`;
+    
     let ws: WebSocket | null = null;
     let reconnectTimer: NodeJS.Timeout;
 
@@ -131,6 +134,10 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
 
       ws.onclose = () => {
         reconnectTimer = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket error:", err);
       };
     };
 
