@@ -7,46 +7,51 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from routes import trading, bot, market, history
-from services.bot_engine import bot_engine as _engine
-
+from routes import trading, bot, market, history, auth_routes
+from services.bot_manager import bot_manager
+from services.database import init_db
+from services.auth_service import seed_admin
+from services.security import SecurityMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.bot_engine = _engine
+    init_db()
+    seed_admin()
+    app.state.bot_manager = bot_manager
     yield
-    await _engine.shutdown()
-
+    await bot_manager.shutdown()
 
 app = FastAPI(
     title="CryptoSignals API — MEXC Scanner + Virtual Trading",
     lifespan=lifespan,
 )
 
+app.add_middleware(SecurityMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[os.getenv("FRONTEND_URL", "*")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(auth_routes.router)
 app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
 app.include_router(bot.router,     prefix="/api/bot",     tags=["bot"])
 app.include_router(market.router,  prefix="/api/market",  tags=["market"])
 app.include_router(history.router, prefix="/api/history", tags=["history"])
 
-
 @app.get("/api/health")
 async def health():
     from services.virtual_exchange import virtual_exchange
+    info = virtual_exchange.get_info()
     return {
         "status":   "ok",
         "data":     "MEXC (klines + contracts)",
-        "balance":  virtual_exchange.balance,
-        "leverage": virtual_exchange.leverage,
+        "balance":  info["balance"],
+        "leverage": info["leverage"],
     }
-
 
 if __name__ == "__main__":
     import uvicorn
