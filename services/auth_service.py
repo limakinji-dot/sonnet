@@ -14,6 +14,13 @@ JWT_EXPIRY = 86400 * 7  # 7 hari
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSKEY = os.getenv("ADMIN_PASSKEY", "admin123")
 
+# ── Global admin ID (di-set saat startup) ──
+_admin_id: Optional[str] = None
+
+def get_admin_id() -> Optional[str]:
+    """Return admin user ID yang di-cache saat startup."""
+    return _admin_id
+
 def hash_passkey(passkey: str) -> str:
     return bcrypt.hashpw(passkey.encode(), bcrypt.gensalt()).decode()
 
@@ -46,6 +53,7 @@ def authenticate_user(username: str, passkey: str) -> Optional[Dict[str, Any]]:
     return None
 
 def seed_admin():
+    global _admin_id
     existing = get_user_by_username(ADMIN_USERNAME)
     if not existing:
         uid = str(uuid.uuid4())
@@ -58,6 +66,8 @@ def seed_admin():
             margin=100,
             balance=1000,
         )
-        print(f"[Auth] Admin seeded: {ADMIN_USERNAME}")
+        _admin_id = uid
+        print(f"[Auth] Admin seeded: {ADMIN_USERNAME} ({_admin_id})")
     else:
-        print(f"[Auth] Admin already exists: {ADMIN_USERNAME}")
+        _admin_id = existing["id"]
+        print(f"[Auth] Admin already exists: {ADMIN_USERNAME} ({_admin_id})")
