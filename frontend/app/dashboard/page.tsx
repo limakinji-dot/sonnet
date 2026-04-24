@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/useAuthContext";
 import { useTrading } from "@/hooks/useTradingContext";
-import { register } from "@/lib/api";
+import { register, getBotState, startBot, stopBot } from "@/lib/api";
 import SignalFeed from "@/components/ui/SignalFeed";
 import TradeHistoryTable from "@/components/ui/TradeHistoryTable";
 import WinRateChart from "@/components/dashboard/WinRateChart";
@@ -23,12 +23,37 @@ export default function DashboardPage() {
   const [regLoading, setRegLoading] = useState(false);
   const [regMsg, setRegMsg] = useState<string | null>(null);
 
+  // ── Admin Token State ──
+  const [tokens, setTokens] = useState(["", "", "", "", ""]);
+  const [tokenLoading, setTokenLoading] = useState(false);
+  const [tokenMsg, setTokenMsg] = useState<string | null>(null);
+
+  // ── Bot State ──
+  const [botRunning, setBotRunning] = useState(false);
+  const [botLoading, setBotLoading] = useState(false);
+
   // Protect route
   useEffect(() => {
     if (!isAuthenticated) {
       router.replace("/");
     }
   }, [isAuthenticated, router]);
+
+  // Sync bot state dari server
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const checkState = async () => {
+      try {
+        const st = await getBotState();
+        setBotRunning(st.running || st.status === "RUNNING");
+      } catch (e) {
+        // silent
+      }
+    };
+    checkState();
+    const iv = setInterval(checkState, 5000);
+    return () => clearInterval(iv);
+  }, [isAuthenticated]);
 
   if (!isAuthenticated) return null;
 
@@ -60,7 +85,50 @@ export default function DashboardPage() {
     }
   };
 
-  // Format balance dengan comma
+  // ── Handler: Update Tokens ──
+  const handleUpdateTokens = async () => {
+    setTokenLoading(true);
+    setTokenMsg(null);
+    try {
+      const res = await fetch("/api/admin/tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tokens }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setTokenMsg(`✅ ${data.message}`);
+      } else {
+        setTokenMsg(`❌ ${data.detail || "Gagal update token"}`);
+      }
+    } catch (e: any) {
+      setTokenMsg(`❌ ${e.message}`);
+    } finally {
+      setTokenLoading(false);
+    }
+  };
+
+  // ── Handler: Start/Stop Bot ──
+  const handleStartBot = async () => {
+    setBotLoading(true);
+    try {
+      const res = await startBot({ symbol: "ALL", tp_pct: 0.004, sl_pct: 0.002, interval: 60 });
+      if (res.ok) setBotRunning(true);
+    } finally {
+      setBotLoading(false);
+    }
+  };
+
+  const handleStopBot = async () => {
+    setBotLoading(true);
+    try {
+      const res = await stopBot();
+      if (res.ok) setBotRunning(false);
+    } finally {
+      setBotLoading(false);
+    }
+  };
+
   const fmtBalance = (n: number) =>
     n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
@@ -88,9 +156,7 @@ export default function DashboardPage() {
               href="/?section=live-logic"
               className="inline-flex items-center gap-2 text-[11px] font-mono text-white/30 hover:text-white/60 transition-colors mb-4 sm:mb-6 group"
             >
-              <span className="group-hover:-translate-x-1 transition-transform">
-                ←
-              </span>
+              <span className="group-hover:-translate-x-1 transition-transform">←</span>
               BACK TO HOME
             </Link>
             <h1 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-white mb-2">
@@ -98,17 +164,31 @@ export default function DashboardPage() {
             </h1>
             <p className="text-[10px] sm:text-xs font-mono text-white/30 tracking-widest">
               ACCOUNT: {username?.toUpperCase()}
-              {isAdmin && (
-                <span className="ml-2 text-[#d4a847]">[ADMIN]</span>
-              )}
+              {isAdmin && <span className="ml-2 text-[#d4a847]">[ADMIN]</span>}
             </p>
           </div>
-          <button
-            onClick={logout}
-            className="self-start sm:self-auto px-4 sm:px-5 py-2.5 rounded-lg glass text-[10px] font-mono text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors border border-white/10"
-          >
-            LOGOUT
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Bot Start/Stop Button */}
+            {isAdmin && (
+              <button
+                onClick={botRunning ? handleStopBot : handleStartBot}
+                disabled={botLoading}
+                className={`px-4 py-2.5 rounded-lg text-[10px] font-mono font-bold tracking-wider transition-colors border ${
+                  botRunning
+                    ? "bg-[#f87171]/10 border-[#f87171]/30 text-[#f87171] hover:bg-[#f87171]/20"
+                    : "bg-[#4ade80]/10 border-[#4ade80]/30 text-[#4ade80] hover:bg-[#4ade80]/20"
+                } disabled:opacity-50`}
+              >
+                {botLoading ? "..." : botRunning ? "STOP BOT" : "START BOT"}
+              </button>
+            )}
+            <button
+              onClick={logout}
+              className="px-4 sm:px-5 py-2.5 rounded-lg glass text-[10px] font-mono text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors border border-white/10"
+            >
+              LOGOUT
+            </button>
+          </div>
         </motion.div>
 
         {/* Top Stats */}
@@ -119,36 +199,12 @@ export default function DashboardPage() {
           className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3 mb-6 sm:mb-8"
         >
           {[
-            {
-              label: "BALANCE",
-              value: `$${fmtBalance(balance.balance)}`,
-              color: "#d4a847",
-              highlight: true,
-            },
-            {
-              label: "INITIAL",
-              value: `$${fmtBalance(balance.initial_balance)}`,
-              color: "#fff",
-            },
-            {
-              label: "LEVERAGE",
-              value: `${balance.leverage}x`,
-              color: "#60a5fa",
-            },
-            {
-              label: "TOTAL TRADES",
-              value: state.trade_count,
-            },
-            {
-              label: "WINS",
-              value: state.win_count,
-              color: "#4ade80",
-            },
-            {
-              label: "LOSSES",
-              value: state.loss_count,
-              color: "#f87171",
-            },
+            { label: "BALANCE", value: `$${fmtBalance(balance.balance)}`, color: "#d4a847", highlight: true },
+            { label: "INITIAL", value: `$${fmtBalance(balance.initial_balance)}`, color: "#fff" },
+            { label: "LEVERAGE", value: `${balance.leverage}x`, color: "#60a5fa" },
+            { label: "TOTAL TRADES", value: state.trade_count },
+            { label: "WINS", value: state.win_count, color: "#4ade80" },
+            { label: "LOSSES", value: state.loss_count, color: "#f87171" },
           ].map((stat) => (
             <div
               key={stat.label}
@@ -183,10 +239,7 @@ export default function DashboardPage() {
               <span className="w-1.5 h-1.5 rounded-full bg-[#d4a847]" />
               Create New User
             </h3>
-            <form
-              onSubmit={handleRegister}
-              className="flex flex-col sm:flex-row gap-3"
-            >
+            <form onSubmit={handleRegister} className="flex flex-col sm:flex-row gap-3">
               <input
                 type="text"
                 placeholder="Username"
@@ -209,11 +262,48 @@ export default function DashboardPage() {
                 {regLoading ? "CREATING..." : "CREATE USER"}
               </button>
             </form>
-            {regMsg && (
-              <p className="mt-3 text-[11px] font-mono text-white/60">
-                {regMsg}
-              </p>
-            )}
+            {regMsg && <p className="mt-3 text-[11px] font-mono text-white/60">{regMsg}</p>}
+          </motion.div>
+        )}
+
+        {/* Admin: Token Manager */}
+        {isAdmin && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            className="mb-6 sm:mb-8 glass rounded-2xl p-4 sm:p-6 border border-blue-500/20"
+          >
+            <h3 className="text-[10px] sm:text-xs font-mono text-blue-400 tracking-[0.25em] uppercase mb-4 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+              Qwen AI Tokens
+            </h3>
+            <div className="space-y-3">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div key={i} className="flex gap-2">
+                  <span className="text-[10px] font-mono text-white/30 w-8 pt-3">#{i + 1}</span>
+                  <input
+                    type="password"
+                    placeholder={`Token ${i + 1}`}
+                    value={tokens[i]}
+                    onChange={(e) => {
+                      const t = [...tokens];
+                      t[i] = e.target.value;
+                      setTokens(t);
+                    }}
+                    className="flex-1 bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-xs text-white placeholder-white/20 focus:outline-none focus:border-blue-400/50 transition-colors"
+                  />
+                </div>
+              ))}
+              <button
+                onClick={handleUpdateTokens}
+                disabled={tokenLoading}
+                className="w-full py-3 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-mono tracking-wider hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+              >
+                {tokenLoading ? "UPDATING..." : "UPDATE TOKENS"}
+              </button>
+            </div>
+            {tokenMsg && <p className="mt-3 text-[11px] font-mono text-white/60">{tokenMsg}</p>}
           </motion.div>
         )}
 
@@ -258,11 +348,7 @@ export default function DashboardPage() {
                 Win Rate
               </h3>
               <div className="w-full flex justify-center">
-                <WinRateChart
-                  wins={state.win_count}
-                  losses={state.loss_count}
-                  size={180}
-                />
+                <WinRateChart wins={state.win_count} losses={state.loss_count} size={180} />
               </div>
             </motion.div>
 
