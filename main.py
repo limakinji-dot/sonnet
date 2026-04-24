@@ -1,58 +1,65 @@
-import asyncio
 import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from dotenv import load_dotenv
+import time
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-load_dotenv()
+API_KEY = os.getenv("API_KEY", "agent-x-dev-key-change-in-production")
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+_rate_limit_store = {}
 
-from routes import trading, bot, market, history, auth_routes
-from services.bot_manager import bot_manager
-from services.database import init_db
-from services.auth_service import seed_admin
-from services.security import SecurityMiddleware
+class SecurityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    seed_admin()
-    app.state.bot_manager = bot_manager
-    yield
-    await bot_manager.shutdown()
+        # Bypass untuk health check, WebSocket upgrade, dan CORS preflight
+        if path in ("/api/health", "/api/bot/ws") or request.method == "OPTIONS":
+            return await call_next(request)
 
-app = FastAPI(
-    title="CryptoSignals API — MEXC Scanner + Virtual Trading",
-    lifespan=lifespan,
-)
+        # 1. API Key
+        api_key = request.headers.get("x-api-key")
+        if api_key is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing X-API-Key header"}
+            )
+        if api_key != API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid API Key"}
+            )
 
-app.add_middleware(SecurityMiddleware)
+        # 2. Timestamp (anti replay)
+        ts_header = request.headers.get("x-timestamp")
+        if ts_header:
+            try:
+                ts = int(ts_header)
+                now_ms = int(time.time() * 1000)
+                if abs(now_ms - ts) > 300000:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Request timestamp expired"}
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid timestamp"}
+                )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "*")],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+        # 3. Rate limit 60 req/min per IP
+        if RATE_LIMIT_ENABLED:
+            client_ip = request.client.host if request.client else "unknown"
+            now = time.time()
+            window = [t for t in _rate_limit_store.get(client_ip, []) if now - t < 60]
+            if len(window) >= 60:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded (60 req/min)"}
+                )
+            window.append(now)
+            _rate_limit_store[client_ip] = window
 
-app.include_router(auth_routes.router)
-app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
-app.include_router(bot.router,     prefix="/api/bot",     tags=["bot"])
-app.include_router(market.router,  prefix="/api/market",  tags=["market"])
-app.include_router(history.router, prefix="/api/history", tags=["history"])
-
-@app.get("/api/health")
-async def health():
-    from services.virtual_exchange import virtual_exchange
-    info = virtual_exchange.get_info()
-    return {
-        "status":   "ok",
-        "data":     "MEXC (klines + contracts)",
-        "balance":  info["balance"],
-        "leverage": info["leverage"],
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
