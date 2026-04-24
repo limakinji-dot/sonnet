@@ -1,97 +1,118 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
-import { formatPrice, cn } from "@/lib/utils";
-import type { Signal } from "@/lib/types";
+import { useTrading } from "@/hooks/useTradingContext";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface TradeHistoryTableProps {
   limit?: number;
   compact?: boolean;
 }
 
+function formatPrice(n: number | undefined) {
+  if (n === undefined || n === null) return "—";
+  return n.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  });
+}
+
 export default function TradeHistoryTable({ limit = 20, compact = false }: TradeHistoryTableProps) {
-  const [history, setHistory] = useState<Signal[]>([]);
+  const { state } = useTrading();
+  const [history, setHistory] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch(`/api/history/signals?limit=${limit}`)
-      .then((r) => r.json())
-      .then((data) => setHistory(data.data || []))
-      .catch(() => {});
-  }, [limit]);
+    const closed = (state.signals || [])
+      .filter((s: any) => s.result === "TP" || s.result === "SL")
+      .slice(0, limit);
+    setHistory(closed);
+  }, [state.signals, limit]);
+
+  const headers = compact
+    ? ["PAIR", "DIR", "ENTRY", "CLOSE", "PnL %"]
+    : ["PAIR", "DIR", "ENTRY", "TP1", "TP2", "MAX", "CLOSE", "PnL %"];
 
   return (
-    <div className="relative">
-      {!compact && (
-        <>
-          <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-[#030303] to-transparent z-10 pointer-events-none" />
-          <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#030303] to-transparent z-10 pointer-events-none" />
-        </>
-      )}
-
-      <div className={cn("overflow-x-auto rounded-2xl glass", compact && "rounded-xl")}>
-        <table className="w-full min-w-[480px] text-left border-collapse">
-          <thead>
-            <tr className="border-b border-white/5">
-              {["PAIR", "DIR", "ENTRY", "CLOSE", "PnL %"].map((h, i) => (
-                <th
-                  key={h}
-                  className={cn(
-                    "px-4 sm:px-6 text-[10px] font-mono tracking-widest text-white/30 font-normal whitespace-nowrap",
-                    i === 4 && "text-right",
-                    compact ? "py-3" : "py-4"
-                  )}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
+    <div className="overflow-x-auto -mx-2 px-2">
+      <table className="w-full min-w-[500px]">
+        <thead>
+          <tr className="border-b border-white/5">
+            {headers.map((h) => (
+              <th
+                key={h}
+                className="text-left py-2 px-2 text-[8px] font-mono text-white/20 tracking-widest"
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <AnimatePresence>
             {history.map((sig, i) => (
               <motion.tr
-                key={sig.id}
-                initial={{ opacity: 0, y: 10 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: i * 0.04 }}
-                className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors"
+                key={sig.id || i}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="border-b border-white/[0.02] hover:bg-white/[0.02] transition-colors"
               >
-                <td className="px-4 sm:px-6 py-3 sm:py-4 text-xs font-mono text-white/80 whitespace-nowrap">
+                <td className="py-2.5 px-2 text-[10px] font-mono text-white font-medium">
                   {sig.symbol.replace("_USDT", "")}
                 </td>
-                <td className="px-4 sm:px-6 py-3 sm:py-4">
+                <td className="py-2.5 px-2">
                   <span
-                    className={cn(
-                      "text-[10px] font-bold px-2 py-0.5 rounded whitespace-nowrap",
+                    className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
                       sig.decision === "LONG"
                         ? "bg-[#4ade80]/10 text-[#4ade80]"
                         : "bg-[#f87171]/10 text-[#f87171]"
-                    )}
+                    }`}
                   >
                     {sig.decision}
                   </span>
                 </td>
-                <td className="px-4 sm:px-6 py-3 sm:py-4 text-xs font-mono text-white/50 whitespace-nowrap">
+                <td className="py-2.5 px-2 text-[10px] font-mono text-white/60">
                   ${formatPrice(sig.entry)}
                 </td>
-                <td className="px-4 sm:px-6 py-3 sm:py-4 text-xs font-mono text-white/50 whitespace-nowrap">
+
+                {!compact && (
+                  <>
+                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]">
+                      ${formatPrice(sig.tp1)}
+                    </td>
+                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]/80">
+                      ${formatPrice(sig.tp2)}
+                    </td>
+                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]/60">
+                      ${formatPrice(sig.tp_max)}
+                    </td>
+                  </>
+                )}
+
+                <td className="py-2.5 px-2 text-[10px] font-mono text-white/60">
                   ${formatPrice(sig.closed_price)}
                 </td>
                 <td
-                  className={cn(
-                    "px-4 sm:px-6 py-3 sm:py-4 text-xs font-mono text-right font-bold whitespace-nowrap",
+                  className={`py-2.5 px-2 text-[10px] font-mono font-bold ${
                     (sig.pnl_pct || 0) >= 0 ? "text-[#4ade80]" : "text-[#f87171]"
-                  )}
+                  }`}
                 >
                   {(sig.pnl_pct || 0) >= 0 ? "+" : ""}
                   {sig.pnl_pct?.toFixed(2)}%
                 </td>
               </motion.tr>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </AnimatePresence>
+        </tbody>
+      </table>
+
+      {history.length === 0 && (
+        <div className="text-center py-8">
+          <p className="text-[10px] font-mono text-white/20 tracking-widest">
+            NO TRADE HISTORY
+          </p>
+        </div>
+      )}
     </div>
   );
 }
