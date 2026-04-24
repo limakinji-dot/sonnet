@@ -1,22 +1,6 @@
 """
-Bot engine — perpetual signal scanner.
-
-Data sources:
-  • Symbol pool  →  MEXC USDT-FUTURES (get_contracts)
-  • Candles      →  MEXC (best free kline data)
-  • AI analysis  →  DeepSeek
-
-Logic change (v2):
-  - No more daily quota. Instead we maintain a MAX_ACTIVE_SIGNALS cap on
-    CONCURRENT open signals.
-  - Whenever an open signal closes (TP / SL / INVALIDATED), the active count
-    drops below the cap and the scanner immediately picks a new coin.
-  - NO TRADE results never count toward the cap.
-  - The scanner keeps a "scanned but not yet producing signal" exclusion set
-    that resets whenever the symbol pool is exhausted (so we cycle through
-    coins forever without double-scanning within one pass).
+Bot engine — perpetual signal scanner (Multi-user support).
 """
-
 import asyncio
 import json
 import logging
@@ -24,95 +8,34 @@ import os
 import random
 import time
 import uuid
-from datetime import datetime, date, timedelta
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from services.mexc_client      import mexc_client
 from services.virtual_exchange import virtual_exchange
 from services.qwen_ai          import qwen_ai
-from services.mexc_price_feed  import price_feed          # ← WS price feed
+from services.mexc_price_feed  import price_feed
 from services.position_ai      import position_ai, MONITOR_INTERVAL
-from utils.indicators          import format_ohlcv_text
+from services.database         import db_save_signal, db_get_signals, db_delete_signals_by_user
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 TIMEFRAMES   = ["5m", "15m", "30m", "1h", "4h"]
 CANDLE_LIMIT = 150
-TIMEFRAMES_MONITOR = ["5m", "15m", "1h", "4h"]   # TFs used for hold/close AI
+TIMEFRAMES_MONITOR = ["5m", "15m", "1h", "4h"]
 
-SIGNALS_FILE = Path(os.getenv("SIGNALS_FILE", "signals.json"))
 MAX_SIGNALS  = 500
-
-# NEW: concurrent open-signal cap (replaces MAX_DAILY_SIGNALS)
 MAX_ACTIVE_SIGNALS = int(os.getenv("MAX_ACTIVE_SIGNALS", "20"))
 
-REQUIRED_SYMBOLS   = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]   # MEXC format
+REQUIRED_SYMBOLS   = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
 INTER_SYMBOL_DELAY = float(os.getenv("INTER_SYMBOL_DELAY", "2.0"))
 
-# Self-ping keepalive (for Railway free tier — prevents sleep)
-KEEPALIVE_URL      = os.getenv("KEEPALIVE_URL", "")          # e.g. https://your-app.up.railway.app/api/health
-KEEPALIVE_INTERVAL = int(os.getenv("KEEPALIVE_INTERVAL", "240"))  # seconds (4 min)
+KEEPALIVE_URL      = os.getenv("KEEPALIVE_URL", "")
+KEEPALIVE_INTERVAL = int(os.getenv("KEEPALIVE_INTERVAL", "240"))
 
-
-# ---------------------------------------------------------------------------
-# Persistence helpers
-# ---------------------------------------------------------------------------
-
-def _load_signals() -> list:
-    try:
-        SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if SIGNALS_FILE.exists():
-            data = json.loads(SIGNALS_FILE.read_text())
-            print(f"📂 Loaded {len(data)} signals from {SIGNALS_FILE.absolute()}")
-            return data[:MAX_SIGNALS]
-    except Exception as e:
-        logger.warning(f"Could not load signals file: {e}")
-        print(f"❌ Failed to load signals: {e}")
-    return []
-
-
-def _save_signals(open_signals: list):
-    try:
-        SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        existing = []
-        if SIGNALS_FILE.exists():
-            existing = json.loads(SIGNALS_FILE.read_text())
-        sig_map = {s["id"]: s for s in existing}
-        for s in open_signals:
-            sig_map[s["id"]] = s
-        final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
-        SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
-        print(f"✅ Signals saved | total: {len(final[:MAX_SIGNALS])}")
-    except Exception as e:
-        logger.warning(f"Could not save signals file: {e}")
-
-
-def _save_closed_signal(signal: dict):
-    try:
-        SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        existing = []
-        if SIGNALS_FILE.exists():
-            existing = json.loads(SIGNALS_FILE.read_text())
-        sig_map = {s["id"]: s for s in existing}
-        sig_map[signal["id"]] = signal
-        final = sorted(sig_map.values(), key=lambda x: -x.get("timestamp", 0))
-        SIGNALS_FILE.write_text(json.dumps(final[:MAX_SIGNALS], indent=2))
-        print(f"✅ Closed signal saved: {signal['id']} | result: {signal.get('result')}")
-    except Exception as e:
-        logger.warning(f"Could not save closed signal: {e}")
-
-
-# ---------------------------------------------------------------------------
-# BotEngine
-# ---------------------------------------------------------------------------
 
 class BotEngine:
-    def __init__(self):
+    def __init__(self, user_id: Optional[str] = None):
+        self.user_id = user_id
         self.running = False
         self.config: Dict[str, Any] = {}
         self.state = {
@@ -128,37 +51,33 @@ class BotEngine:
             "total_pnl_usdt":     0.0,
             "current_symbol":     None,
             "symbols_scanned":    0,
-            # active signal count (replaces daily_signal_count)
             "active_signal_count": 0,
         }
         self._rebuild_counters()
 
         self._task:       Optional[asyncio.Task] = None
-        self._ka_task:    Optional[asyncio.Task] = None   # keepalive
+        self._ka_task:    Optional[asyncio.Task] = None
         self._listeners:  List[Callable]         = []
 
-        # Per-pass exclusion set — reset when pool is exhausted
         self._pass_scanned: set = set()
 
-    # ------------------------------------------------------------------
-    # Rebuild counters from disk
-    # ------------------------------------------------------------------
     def _rebuild_counters(self):
-        all_signals = _load_signals()
+        all_signals = db_get_signals(user_id=self.user_id, limit=MAX_SIGNALS)
+        self.state["signals"] = []
         for s in all_signals:
             result = s.get("result")
             status = s.get("status")
             if result == "TP":
                 self.state["trade_count"] += 1
                 self.state["win_count"]   += 1
-                self.state["total_pnl_pct"]   = round(
+                self.state["total_pnl_pct"]  = round(
                     self.state["total_pnl_pct"]  + (s.get("pnl_pct") or 0), 4)
                 self.state["total_pnl_usdt"]  = round(
                     self.state["total_pnl_usdt"] + (s.get("pnl_usdt") or 0), 4)
             elif result == "SL":
                 self.state["trade_count"] += 1
                 self.state["loss_count"]  += 1
-                self.state["total_pnl_pct"]   = round(
+                self.state["total_pnl_pct"]  = round(
                     self.state["total_pnl_pct"]  + (s.get("pnl_pct") or 0), 4)
                 self.state["total_pnl_usdt"]  = round(
                     self.state["total_pnl_usdt"] + (s.get("pnl_usdt") or 0), 4)
@@ -168,9 +87,6 @@ class BotEngine:
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
         self.state["active_signal_count"] = len(self.state["signals"])
 
-    # ------------------------------------------------------------------
-    # Listeners
-    # ------------------------------------------------------------------
     def add_listener(self, fn: Callable):
         if fn not in self._listeners:
             self._listeners.append(fn)
@@ -182,15 +98,9 @@ class BotEngine:
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------
-    # Active signal count (thread-safe helper)
-    # ------------------------------------------------------------------
     def _active_count(self) -> int:
         return sum(1 for s in self.state["signals"] if s.get("status") == "OPEN")
 
-    # ------------------------------------------------------------------
-    # Start / Stop
-    # ------------------------------------------------------------------
     async def start(self, config: dict):
         if self.running:
             return {"ok": False, "reason": "Bot already running"}
@@ -201,7 +111,6 @@ class BotEngine:
         self.state["status"] = "RUNNING"
         self._task = asyncio.create_task(self._loop())
 
-        # Start keepalive ping if URL configured
         if KEEPALIVE_URL:
             self._ka_task = asyncio.create_task(self._keepalive_loop())
             print(f"🏓 Keepalive ping started → {KEEPALIVE_URL} every {KEEPALIVE_INTERVAL}s")
@@ -224,11 +133,8 @@ class BotEngine:
         await price_feed.stop()
         await mexc_client.close()
         await qwen_ai.close()
-        await position_ai.close()   # ← position monitor AI
+        await position_ai.close()
 
-    # ------------------------------------------------------------------
-    # Keepalive loop — ping self to prevent Railway free-tier sleep
-    # ------------------------------------------------------------------
     async def _keepalive_loop(self):
         import httpx
         async with httpx.AsyncClient(timeout=10) as client:
@@ -242,9 +148,6 @@ class BotEngine:
                 except Exception as e:
                     print(f"🏓 Keepalive ping failed: {e}")
 
-    # ------------------------------------------------------------------
-    # Main loop — perpetual, cap-based
-    # ------------------------------------------------------------------
     async def _loop(self):
         logger.info("Bot scanner loop started")
         print("Bot scanner loop started")
@@ -258,7 +161,6 @@ class BotEngine:
             try:
                 active = self._active_count()
 
-                # ── Already at cap → wait a bit then re-check ──────────
                 if active >= MAX_ACTIVE_SIGNALS:
                     self.state["status"] = "MONITORING"
                     self._emit("status",
@@ -271,11 +173,9 @@ class BotEngine:
                 slots_needed = MAX_ACTIVE_SIGNALS - active
                 print(f"\n[Loop] Active={active}/{MAX_ACTIVE_SIGNALS} — scanning for {slots_needed} more signal(s)")
 
-                # ── Build pool excluding already-scanned this pass ──────
                 pool = await self._build_pool(exclude=self._pass_scanned)
 
                 if not pool:
-                    # All symbols scanned this pass — reset exclusion set
                     print("[Loop] Pass exhausted — resetting scanned set for next pass")
                     self._pass_scanned = set()
                     await asyncio.sleep(5)
@@ -284,7 +184,6 @@ class BotEngine:
                 self.state["status"] = "RUNNING"
                 i = 0
                 while i < len(pool) and self.running:
-                    # Re-check cap each iteration (a signal may have closed)
                     if self._active_count() >= MAX_ACTIVE_SIGNALS:
                         break
 
@@ -349,11 +248,7 @@ class BotEngine:
 
         logger.info("Bot scanner loop ended")
 
-    # ------------------------------------------------------------------
-    # Fetch candles + ticker (MEXC)
-    # ------------------------------------------------------------------
     async def _fetch_market_data(self, symbol: str):
-        """symbol is MEXC format e.g. BTC_USDT"""
         candles_by_tf: Dict[str, list] = {}
         for tf in TIMEFRAMES:
             try:
@@ -378,9 +273,6 @@ class BotEngine:
 
         return candles_by_tf, current_price
 
-    # ------------------------------------------------------------------
-    # Build symbol pool from MEXC
-    # ------------------------------------------------------------------
     async def _build_pool(self, exclude: set = None) -> List[str]:
         exclude = exclude or set()
         self._emit("status", "Fetching contract list from MEXC…")
@@ -400,12 +292,7 @@ class BotEngine:
 
         return mandatory + pool
 
-    # ------------------------------------------------------------------
-    # Process one AI signal
-    # ------------------------------------------------------------------
-    def _process_signal(self, symbol: str, current_price: float,
-                        signal: dict) -> bool:
-        """symbol is MEXC format (BTC_USDT) throughout the engine."""
+    def _process_signal(self, symbol: str, current_price: float, signal: dict) -> bool:
         self.state["current_symbol"] = symbol
         self.state["symbols_scanned"] += 1
 
@@ -419,6 +306,7 @@ class BotEngine:
         sig_id = str(uuid.uuid4())[:8]
         signal_record = {
             "id":            sig_id,
+            "user_id":       self.user_id,
             "symbol":        symbol,
             "timestamp":     int(time.time() * 1000),
             "current_price": current_price,
@@ -438,9 +326,9 @@ class BotEngine:
             "closed_at":     None,
             "closed_price":  None,
             "entry_hit":     False,
+            "created_at":    int(time.time()),
         }
 
-        # Validate TP/SL direction before accepting
         _entry = signal_record.get("entry") or current_price
         _tp    = signal_record.get("tp")
         _sl    = signal_record.get("sl")
@@ -458,7 +346,7 @@ class BotEngine:
 
         self.state["signals"].insert(0, signal_record)
         self.state["signals"] = self.state["signals"][:MAX_SIGNALS]
-        _save_signals(self.state["signals"])
+        db_save_signal(signal_record)
 
         self.state["last_signal"]         = signal_record
         self.state["active_signal_count"] = self._active_count()
@@ -471,28 +359,12 @@ class BotEngine:
             f"[active {self._active_count()}/{MAX_ACTIVE_SIGNALS}]"
         )
 
-        # Spawn price monitor
         price_feed.watch(symbol)
         asyncio.create_task(self._monitor_signal(sig_id))
 
         return True
 
-    # ------------------------------------------------------------------
-    # Price monitor — WS price feed + AI hold/close
-    # ------------------------------------------------------------------
     async def _monitor_signal(self, sig_id: str):
-        """
-        Monitor one open signal until TP / SL / AI_CLOSE / INVALIDATED / timeout.
-
-        Flow after entry hit (Alpha Arena-style):
-          Every MONITOR_INTERVAL seconds → fetch fresh candles → ask position_ai
-          to HOLD or CLOSE.  Retries until valid response (sequential token rotation).
-          TP / SL price checks still run every price tick in parallel.
-
-        Timeout fix:
-          Previously the task ended leaving signal status = "OPEN" with no monitor.
-          Now: timeout → INVALIDATED (result="TIMEOUT") → releases the active slot.
-        """
         signal = self._find_signal(sig_id)
         if not signal:
             return
@@ -512,7 +384,6 @@ class BotEngine:
         sl_f  = float(sl)
         inv_f = float(inv_price) if inv_price else None
 
-        # Capture original open analysis so position_ai has full context
         original_analysis = {
             "trend":      signal.get("trend"),
             "pattern":    signal.get("pattern"),
@@ -520,12 +391,12 @@ class BotEngine:
             "confidence": signal.get("confidence"),
         }
 
-        max_duration        = 60 * 60 * 8   # 8 hours hard cap
+        max_duration        = 60 * 60 * 8
         start               = time.time()
-        entry_hit           = (entry <= 0)   # treat as already hit if no entry given
-        PRICE_TICK_INTERVAL = 3              # seconds between price_tick events
+        entry_hit           = (entry <= 0)
+        PRICE_TICK_INTERVAL = 3
         _last_tick_emit     = start
-        _last_ai_check      = 0.0            # will be set when entry is hit
+        _last_ai_check      = 0.0
 
         _start_price = float(signal.get("current_price") or entry)
         if entry > 0:
@@ -540,7 +411,6 @@ class BotEngine:
             f"entry={entry} start_price={_start_price} pullback={_pullback_entry}"
         )
 
-        # ─── main monitoring loop ─────────────────────────────────────
         while time.time() - start < max_duration:
             if not self.running:
                 break
@@ -549,7 +419,6 @@ class BotEngine:
             if not signal or signal.get("status") == "CLOSED":
                 break
 
-            # ── Get current price (WS feed, REST fallback) ─────────────
             price = await price_feed.wait_for_price(symbol, timeout=5.0)
             if not price or price <= 0:
                 try:
@@ -562,7 +431,6 @@ class BotEngine:
 
             signal["current_price"] = price
 
-            # ── Emit price tick for frontend ────────────────────────────
             now_t = time.time()
             if now_t - _last_tick_emit >= PRICE_TICK_INTERVAL:
                 self._emit("price_tick", {
@@ -574,7 +442,6 @@ class BotEngine:
                 })
                 _last_tick_emit = now_t
 
-            # ── Invalidation check (before entry) ──────────────────────
             if inv_f and not entry_hit:
                 inv_hit = (
                     (direction == "LONG"  and price <= inv_f) or
@@ -589,7 +456,7 @@ class BotEngine:
                         "pnl_usdt":     0.0,
                         "pnl_pct":      0.0,
                     })
-                    _save_closed_signal(signal)
+                    db_save_signal(signal)
                     self.state["signals"] = [
                         s for s in self.state["signals"] if s["id"] != sig_id
                     ]
@@ -600,13 +467,12 @@ class BotEngine:
                         "price":     price,
                         "timestamp": int(time.time() * 1000),
                     })
-                    self._emit("balance_update", virtual_exchange.get_info())
+                    self._emit("balance_update", virtual_exchange.get_info(self.user_id))
                     print(f"  ❌ {sig_id} INVALIDATED @ {price}"
                           f" [active {self._active_count()}/{MAX_ACTIVE_SIGNALS}]")
                     price_feed.unwatch(symbol)
                     break
 
-            # ── Entry gate ─────────────────────────────────────────────
             if not entry_hit:
                 if direction == "LONG":
                     touched = price <= entry if _pullback_entry else price >= entry
@@ -616,14 +482,14 @@ class BotEngine:
                 if touched:
                     entry_hit      = True
                     signal["entry_hit"] = True
-                    _last_ai_check = time.time()   # start AI interval from entry
+                    _last_ai_check = time.time()
                     mode_label     = "pullback" if _pullback_entry else "breakout"
                     print(f"  📍 {sig_id} entry HIT ({direction} {mode_label}) @ {price}")
+                    db_save_signal(signal)
                 else:
                     continue
                 continue
 
-            # ── TP / SL price check (every tick, after entry) ──────────
             hit = None
             if direction == "LONG":
                 if price >= tp_f:   hit = "TP"
@@ -638,21 +504,18 @@ class BotEngine:
                     (close_p - entry) / entry * 100 if direction == "LONG"
                     else (entry - close_p) / entry * 100, 4
                 ) if entry > 0 else 0.0
-                # Use pnl_pct (not hit label) to determine win/loss —
-                # after SL+, sl_f may be above entry so SL hit = profit
                 ve_label = "TP" if pnl_pct >= 0 else "SL"
-                pnl_usdt = virtual_exchange.apply_result(ve_label, direction, entry, close_p)
+                pnl_usdt = virtual_exchange.apply_result(ve_label, direction, entry, close_p, self.user_id)
 
                 signal.update({
                     "status":       "CLOSED",
-                    "result":       hit,          # keep "TP"/"SL" as the trigger label
+                    "result":       hit,
                     "pnl_pct":      pnl_pct,
                     "pnl_usdt":     pnl_usdt,
                     "closed_at":    int(time.time() * 1000),
                     "closed_price": close_p,
                 })
                 self.state["trade_count"] += 1
-                # Win = positive pnl (covers SL+ hit above entry)
                 if pnl_pct >= 0:
                     self.state["win_count"] += 1
                 else:
@@ -662,23 +525,22 @@ class BotEngine:
                 self.state["total_pnl_usdt"] = round(
                     self.state["total_pnl_usdt"] + pnl_usdt, 4)
 
-                _save_closed_signal(signal)
+                db_save_signal(signal)
                 self.state["signals"] = [
                     s for s in self.state["signals"] if s["id"] != sig_id
                 ]
                 self.state["active_signal_count"] = self._active_count()
-                self._emit("signal_closed", {**signal, "balance": virtual_exchange.balance})
-                self._emit("balance_update", virtual_exchange.get_info())
+                self._emit("signal_closed", {**signal, "balance": virtual_exchange.get_info(self.user_id)["balance"]})
+                self._emit("balance_update", virtual_exchange.get_info(self.user_id))
                 print(
                     f"  Signal {sig_id} {hit} @ {close_p} | "
                     f"pnl={pnl_pct}% / {pnl_usdt:+.4f} USDT | "
-                    f"balance={virtual_exchange.balance} USDT | "
+                    f"balance={virtual_exchange.get_info(self.user_id)['balance']} USDT | "
                     f"active {self._active_count()}/{MAX_ACTIVE_SIGNALS}"
                 )
                 price_feed.unwatch(symbol)
                 break
 
-            # ── AI Hold/Close check — every MONITOR_INTERVAL seconds ────
             if (
                 entry_hit
                 and position_ai.enabled
@@ -709,8 +571,8 @@ class BotEngine:
                         sl                 = sl_f,
                         current_price      = price,
                         candles_by_tf      = candles_by_tf,
-                        leverage           = virtual_exchange.leverage,
-                        margin_usdt        = virtual_exchange.entry_usdt,
+                        leverage           = virtual_exchange.get_info(self.user_id)["leverage"],
+                        margin_usdt        = virtual_exchange.get_info(self.user_id)["entry_usdt"],
                         original_analysis  = original_analysis,
                         sl_plus_history    = signal.get("sl_plus_history") or [],
                     )
@@ -718,6 +580,7 @@ class BotEngine:
                     signal["last_ai_decision"] = ai_result.get("decision")
                     signal["last_ai_reason"]   = ai_result.get("reason")
                     signal["last_ai_at"]       = int(time.time() * 1000)
+                    db_save_signal(signal)
 
                     self._emit("signal_ai_update", {
                         "id":        sig_id,
@@ -728,14 +591,11 @@ class BotEngine:
                         "timestamp": int(time.time() * 1000),
                     })
 
-                    # ── SL+ — move stop loss to lock profit ────────────
                     if ai_result.get("decision") == "SL+":
                         new_sl = ai_result.get("new_sl")
                         if new_sl and float(new_sl) > 0:
                             old_sl = sl_f
                             new_sl_f = float(new_sl)
-
-                            # Extra guard: must improve the SL (closer to price)
                             sl_improves = (
                                 (direction == "LONG"  and new_sl_f > old_sl) or
                                 (direction == "SHORT" and new_sl_f < old_sl)
@@ -751,7 +611,7 @@ class BotEngine:
                                     "price": price,
                                     "at":    int(time.time() * 1000),
                                 })
-                                _save_signals(self.state["signals"])
+                                db_save_signal(signal)
                                 self._emit("signal_sl_updated", {
                                     "id":        sig_id,
                                     "symbol":    symbol,
@@ -784,7 +644,7 @@ class BotEngine:
 
                         ve_label = "TP" if pnl_pct >= 0 else "SL"
                         pnl_usdt = virtual_exchange.apply_result(
-                            ve_label, direction, entry, price
+                            ve_label, direction, entry, price, self.user_id
                         )
 
                         signal.update({
@@ -806,21 +666,21 @@ class BotEngine:
                         self.state["total_pnl_usdt"] = round(
                             self.state["total_pnl_usdt"] + pnl_usdt, 4)
 
-                        _save_closed_signal(signal)
+                        db_save_signal(signal)
                         self.state["signals"] = [
                             s for s in self.state["signals"] if s["id"] != sig_id
                         ]
                         self.state["active_signal_count"] = self._active_count()
                         self._emit("signal_closed", {
                             **signal,
-                            "balance": virtual_exchange.balance,
+                            "balance": virtual_exchange.get_info(self.user_id)["balance"],
                         })
-                        self._emit("balance_update", virtual_exchange.get_info())
+                        self._emit("balance_update", virtual_exchange.get_info(self.user_id))
                         print(
                             f"  🤖 {sig_id} AI_CLOSE @ {price} | "
                             f"pnl={pnl_pct}% / {pnl_usdt:+.4f} USDT | "
                             f"reason: {ai_result.get('reason')} | "
-                            f"balance={virtual_exchange.balance} USDT | "
+                            f"balance={virtual_exchange.get_info(self.user_id)['balance']} USDT | "
                             f"active {self._active_count()}/{MAX_ACTIVE_SIGNALS}"
                         )
                         price_feed.unwatch(symbol)
@@ -839,13 +699,9 @@ class BotEngine:
                         f"  {sig_id} AI position check exception: {e}", exc_info=True
                     )
 
-        # ─── Loop ended — bot stopped, signal closed, or 8h timeout ──────
         if self.running:
             signal = self._find_signal(sig_id)
             if signal and signal.get("status") == "OPEN":
-                # FIX: previously "staying OPEN" with NO active monitor task
-                # → signal would never close, slot permanently occupied.
-                # Now: INVALIDATED with result=TIMEOUT → slot released immediately.
                 print(
                     f"  ⏰ {sig_id} timed out (8h) — "
                     f"marking INVALIDATED (was: entry_hit={entry_hit})"
@@ -858,7 +714,7 @@ class BotEngine:
                     "pnl_usdt":     0.0,
                     "pnl_pct":      0.0,
                 })
-                _save_closed_signal(signal)
+                db_save_signal(signal)
                 self.state["signals"] = [
                     s for s in self.state["signals"] if s["id"] != sig_id
                 ]
@@ -878,21 +734,21 @@ class BotEngine:
                 return s
         return None
 
-    # ------------------------------------------------------------------
-    # State / Stats
-    # ------------------------------------------------------------------
     def get_state(self) -> dict:
         wins    = self.state["win_count"]
         losses  = self.state["loss_count"]
         closed  = wins + losses
         winrate = round(wins / closed * 100, 2) if closed > 0 else 0.0
         active  = self._active_count()
+        balance_info = virtual_exchange.get_info(self.user_id)
         return {
             **self.state,
             "winrate":             winrate,
             "active_signal_count": active,
             "max_active_signals":  MAX_ACTIVE_SIGNALS,
-            "balance":             virtual_exchange.balance,
+            "balance":             balance_info["balance"],
+            "leverage":            balance_info["leverage"],
+            "entry_usdt":          balance_info["entry_usdt"],
         }
 
     def reset_stats(self):
@@ -910,13 +766,11 @@ class BotEngine:
             "active_signal_count": 0,
         })
         self._pass_scanned = set()
-        virtual_exchange.reset()
-        try:
-            SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            SIGNALS_FILE.write_text(json.dumps([], indent=2))
-            print(f"🗑️  Signals file cleared: {SIGNALS_FILE.absolute()}")
-        except Exception as e:
-            logger.warning(f"Could not clear signals file: {e}")
+        virtual_exchange.reset(self.user_id)
+        if self.user_id:
+            db_delete_signals_by_user(self.user_id)
+        print(f"🗑️  Signals cleared for user {self.user_id}")
 
 
-bot_engine = BotEngine()
+# Singleton global engine (backward compat)
+bot_engine = BotEngine(user_id=None)
