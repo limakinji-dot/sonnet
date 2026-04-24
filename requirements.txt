@@ -6,3 +6,5 @@ pydantic==2.8.2
 matplotlib
 matplotlib==3.9.2
 websockets==13.0.1
+bcrypt==4.1.2
+PyJWT==2.8.0
