@@ -23,6 +23,7 @@ export default function LoginModal({ onClose }: LoginModalProps) {
     setLoading(false);
     if (res.success) {
       onClose();
+      window.location.reload(); // refresh biar state trading ke-update
     } else {
       setError(res.error || "Login failed");
     }
