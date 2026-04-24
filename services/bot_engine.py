@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+import sqlite3
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
@@ -62,7 +63,16 @@ class BotEngine:
         self._pass_scanned: set = set()
 
     def _rebuild_counters(self):
-        all_signals = db_get_signals(user_id=self.user_id, limit=MAX_SIGNALS)
+        try:
+            all_signals = db_get_signals(user_id=self.user_id, limit=MAX_SIGNALS)
+        except sqlite3.OperationalError as e:
+            # Table doesn't exist yet — init_db() hasn't run (happens at import time)
+            if "no such table" in str(e).lower():
+                logger.warning("Signals table not found — skipping counter rebuild (will retry after init_db)")
+                all_signals = []
+            else:
+                raise
+
         self.state["signals"] = []
         for s in all_signals:
             result = s.get("result")
