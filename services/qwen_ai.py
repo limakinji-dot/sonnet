@@ -2,24 +2,26 @@
 Qwen AI Client — drop-in replacement for deepseek_ai.py
 
 Features:
-  • Up to 5 bearer tokens (QWEN_TOKEN_1 .. QWEN_TOKEN_5) — round-robin + failover
-  • Thinking mode ("Thinking") — deep step-by-step reasoning
-  • Vision — sends candlestick chart PNG per timeframe alongside OHLCV text
-  • Charts generated server-side with matplotlib (non-interactive Agg backend)
-  • Auto token refresh via GET /v1/refresh on 401
+ • Up to 5 bearer tokens (QWEN_TOKEN_1 .. QWEN_TOKEN_5) — round-robin + failover
+ • Thinking mode ("Thinking") — deep step-by-step reasoning
+ • Vision — sends candlestick chart PNG per timeframe alongside OHLCV text
+ • Charts generated server-side with matplotlib (non-interactive Agg backend)
+ • Auto token refresh via GET /v1/refresh on 401
+ • Win-rate & trade-history aware — AI knows current performance stats
+ • Multi-target output: TP1, TP2, MAX
 
 Railway env vars:
-  QWEN_TOKEN_1 .. QWEN_TOKEN_5  ← bearer tokens from chat.qwen.ai (at least 1)
-  QWEN_BASE_URL                 ← default: https://qwen-web-gateway.onrender.com
-  QWEN_MODEL                    ← default: qwen3.6-plus
-  QWEN_THINKING_MODE            ← default: Thinking  (Auto | Thinking | Fast)
+ QWEN_TOKEN_1 .. QWEN_TOKEN_5 ← bearer tokens from chat.qwen.ai (at least 1)
+ QWEN_BASE_URL ← default: https://qwen-web-gateway.onrender.com
+ QWEN_MODEL ← default: qwen3.6-plus
+ QWEN_THINKING_MODE ← default: Thinking (Auto | Thinking | Fast)
 
 Token expiry & refresh:
-  Tokens are web-session cookies, NOT credit-based quotas — they don't "run out"
-  on a schedule.  They expire when the browser session expires (~24-48h idle).
-  This client calls GET /v1/refresh automatically on every 401, so short-lived
-  expiries are handled without manual intervention.  For long-term reliability,
-  keep 5 fresh tokens and rotate via QWEN_TOKEN_1..5.
+ Tokens are web-session cookies, NOT credit-based quotas — they don't "run out"
+ on a schedule. They expire when the browser session expires (~24-48h idle).
+ This client calls GET /v1/refresh automatically on every 401, so short-lived
+ expiries are handled without manual intervention. For long-term reliability,
+ keep 5 fresh tokens and rotate via QWEN_TOKEN_1..5.
 """
 
 import asyncio
@@ -32,26 +34,26 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from services.ai_lock import ai_lock   # ← FIX: was missing, caused NameError on ai_lock()
+from services.ai_lock import ai_lock  # ← FIX: was missing, caused NameError on ai_lock()
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Config (Railway env vars)
 # ---------------------------------------------------------------------------
-_GATEWAY      = os.getenv("QWEN_BASE_URL", "https://qwen-web-gateway.onrender.com")
-QWEN_MODEL    = os.getenv("QWEN_MODEL",    "qwen3.6-plus")
-QWEN_THINKING = os.getenv("QWEN_THINKING_MODE", "Thinking")   # Auto | Thinking | Fast
+_GATEWAY = os.getenv("QWEN_BASE_URL", "https://qwen-web-gateway.onrender.com")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.6-plus")
+QWEN_THINKING = os.getenv("QWEN_THINKING_MODE", "Thinking")  # Auto | Thinking | Fast
 
-CHAT_URL    = f"{_GATEWAY}/v1/openai/chat/completions"
+CHAT_URL = f"{_GATEWAY}/v1/openai/chat/completions"
 REFRESH_URL = f"{_GATEWAY}/v1/refresh"
 
 # ---------------------------------------------------------------------------
-# Chart generation  (matplotlib — non-interactive Agg backend)
+# Chart generation (matplotlib — non-interactive Agg backend)
 # ---------------------------------------------------------------------------
 try:
     import matplotlib
-    matplotlib.use("Agg")           # must be set BEFORE importing pyplot
+    matplotlib.use("Agg")  # must be set BEFORE importing pyplot
     import matplotlib.pyplot as plt
     HAS_CHARTS = True
     logger.info("matplotlib loaded — candlestick charts enabled")
@@ -59,7 +61,7 @@ try:
 except ImportError:
     HAS_CHARTS = False
     logger.warning("matplotlib not installed — falling back to text-only mode")
-    print("⚠️  qwen_ai: matplotlib not found — text-only mode (pip install matplotlib)")
+    print("⚠️ qwen_ai: matplotlib not found — text-only mode (pip install matplotlib)")
 
 
 def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
@@ -70,8 +72,8 @@ def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
     if not HAS_CHARTS or not candles:
         return None
 
-    data = candles[-150:]   # matches CANDLE_LIMIT
-    n    = len(data)
+    data = candles[-150:]  # matches CANDLE_LIMIT
+    n = len(data)
 
     try:
         fig, (ax1, ax2) = plt.subplots(
@@ -89,7 +91,7 @@ def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
             except (IndexError, ValueError, TypeError):
                 continue
 
-            bull  = close >= o
+            bull = close >= o
             color = "#26a69a" if bull else "#ef5350"
 
             # wick
@@ -110,7 +112,7 @@ def _draw_chart(candles: list, symbol: str, tf: str) -> Optional[str]:
 
         # ── styling ──────────────────────────────────────────────────
         ax1.set_title(
-            f"{symbol}  ·  {tf}  ·  {n} candles",
+            f"{symbol} · {tf} · {n} candles",
             color="#e0e0e0", fontsize=10, pad=6,
         )
         ax1.set_xlim(-1, n)
@@ -156,7 +158,7 @@ def _generate_all_charts(candles_by_tf: dict, symbol: str) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# System prompt  (identical strategy rules as the original DeepSeek version)
+# System prompt — strategy rules + performance awareness
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """You are an AI trained to mimic a specific trading strategy based on example data.
 
@@ -167,17 +169,17 @@ Your job:
 Focus on:
 - Trend structure (market direction)
 - Wick behavior (rejection / inefficiency)
-- Void 
+- Void
 - Candle relationships
 - Multi-timeframe context (HTF vs LTF)
 
-----------------------------------------
+---
 STRICT TREND RULE:
 - UP → ONLY LONG (Higher Low → Higher High)
 - DOWN → ONLY SHORT (Lower High → Lower Low)
 - Do NOT counter-trade by default
 
-----------------------------------------
+---
 WICK + VOID DIRECTION RULE (CRITICAL):
 
 - UP trend:
@@ -197,21 +199,21 @@ Logic:
 
 - NEVER choose a void that would require chasing price
 
-----------------------------------------
+---
 ENTRY DISTANCE RULE:
 - Entry MUST be placed at a clear void
 - Entry must NOT be near current price without structure
 - If price is already near the level → NO TRADE
 - Entry should feel like a LIMIT order (far from price), not a market entry
 
-----------------------------------------
+---
 NO TRADE RULE:
 - No clear void → NO TRADE
 - Bad structure → NO TRADE
 - Entry too close to price → NO TRADE
 - If very low volume → NO TRADE
 
-----------------------------------------
+---
 REVERSAL RULE (ADVANCED):
 Reversal trades are allowed ONLY if ALL conditions are met:
 
@@ -222,20 +224,49 @@ Reversal trades are allowed ONLY if ALL conditions are met:
 3. The level has NOT been revisited
 
 If ALL valid → Counter-trend entry is allowed
-If NOT       → Stay with trend or NO TRADE
+If NOT → Stay with trend or NO TRADE
 
-----------------------------------------
+---
 PRIORITY RULE:
 1. Primary → Trend-following setups
 2. Secondary → Reversal (ONLY with strong HTF confirmation)
 
-----------------------------------------
+---
 ANTI-FAKE RULE:
 - Do NOT assume reversal randomly
 - Do NOT force trades
 - If unsure → NO TRADE
 
-----------------------------------------
+---
+MULTI-TARGET RULE (TP1 / TP2 / MAX):
+- Every valid trade MUST have 3 profit targets: TP1, TP2, MAX
+- TP1 = nearest realistic target (1:1 to 1:2 R/R). This is the "safe" take.
+- TP2 = intermediate target (1:2 to 1:3 R/R). This is the "aggressive" take.
+- MAX = maximum realistic extension (1:3+ R/R or next major HTF level). This is the "moon" take.
+- Risk/Reward is calculated from ENTRY to each TP, with SL as risk.
+- TP1 MUST be closer to entry than TP2. TP2 MUST be closer than MAX.
+- For LONG: TP1 < TP2 < MAX (all above entry)
+- For SHORT: TP1 > TP2 > MAX (all below entry)
+
+---
+SL+ (STOP-LOSS PLUS) TRIGGER RULE:
+- When price hits TP1 and position is in PROFIT → AI should set a "sl_trigger_price"
+- This is the price level where, if reached, the monitor AI should move SL to breakeven or better
+- sl_trigger_price is NOT the SL itself — it is the TRIGGER level for the monitor to act
+- For LONG: sl_trigger_price should be slightly above TP1 (to confirm TP1 is "hit")
+- For SHORT: sl_trigger_price should be slightly below TP1
+- If no clear TP1 hit scenario → set sl_trigger_price to null
+
+---
+PERFORMANCE AWARENESS RULE:
+- You will receive current win-rate, total trades, and recent trade history
+- If win-rate is low (< 50%) → be MORE SELECTIVE. Only take A+ setups.
+- If win-rate is high (> 65%) → you can be slightly more aggressive, but still follow rules.
+- If recent streak is losses → tighten criteria, wait for perfect void.
+- If recent streak is wins → stay disciplined, don't get overconfident.
+- Your decision must ALWAYS be based on chart structure first, stats second.
+
+---
 TRAINING DATA:
 
 [
@@ -267,6 +298,45 @@ TRAINING DATA:
 
 
 # ---------------------------------------------------------------------------
+# Helper: format trade history for prompt
+# ---------------------------------------------------------------------------
+def _fmt_history(signals: list, limit: int = 10) -> str:
+    """Format recent closed signals into a compact text block."""
+    if not signals:
+        return "No recent trade history."
+    lines = [f"Last {min(len(signals), limit)} closed trades:"]
+    for s in signals[:limit]:
+        result = s.get("result", "?")
+        sym = s.get("symbol", "?")
+        dec = s.get("decision", "?")
+        pnl = s.get("pnl_pct", 0)
+        conf = s.get("confidence", 0)
+        sign = "+" if pnl >= 0 else ""
+        emoji = "🟢" if result == "TP" else "🔴" if result == "SL" else "⚪"
+        lines.append(
+            f"  {emoji} {sym} {dec} → {result} | PnL: {sign}{pnl:.2f}% | Conf: {conf}%"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_stats(stats: dict) -> str:
+    """Format performance stats into a compact text block."""
+    if not stats:
+        return "No performance stats available."
+    total = stats.get("trade_count", 0)
+    wins = stats.get("win_count", 0)
+    losses = stats.get("loss_count", 0)
+    wr = stats.get("winrate", 0)
+    total_pnl = stats.get("total_pnl_pct", 0)
+    sign = "+" if total_pnl >= 0 else ""
+    return (
+        f"Performance Stats:\n"
+        f"  Total Trades: {total} | Wins: {wins} | Losses: {losses}\n"
+        f"  Win Rate: {wr}% | Total PnL: {sign}{total_pnl:.2f}%"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Single-token Qwen client
 # ---------------------------------------------------------------------------
 
@@ -274,9 +344,9 @@ class QwenAIClient:
     """One bearer token = one independent Qwen API client."""
 
     def __init__(self, token: str, slot: int):
-        self.token  = token
-        self.slot   = slot
-        self._tag   = f"[QW-{slot}]"
+        self.token = token
+        self.slot = slot
+        self._tag = f"[QW-{slot}]"
         self.client = httpx.AsyncClient(timeout=240)
 
     # ------------------------------------------------------------------
@@ -310,12 +380,14 @@ class QwenAIClient:
         symbol: str,
         candles_by_tf: dict,
         current_price: float = None,
+        stats: dict = None,
+        history_signals: list = None,
     ) -> dict:
         tag = self._tag
         logger.info(f"{tag} Starting analysis for {symbol}")
 
         # ── 1. Generate candlestick charts (CPU → thread pool) ────────
-        loop   = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
         charts: Dict[str, str] = {}
         try:
             charts = await loop.run_in_executor(
@@ -324,7 +396,7 @@ class QwenAIClient:
             if charts:
                 print(f"{tag} 📊 {symbol} charts ready: {list(charts.keys())}")
             else:
-                print(f"{tag} ⚠️  {symbol} charts skipped (matplotlib missing or no candles)")
+                print(f"{tag} ⚠️ {symbol} charts skipped (matplotlib missing or no candles)")
         except Exception as e:
             logger.warning(f"{tag} Chart generation error for {symbol}: {e}")
 
@@ -345,8 +417,12 @@ class QwenAIClient:
             tf_blocks.append("\n".join(lines))
             last_candle_price = float(candles[-1][4])
 
-        live_price   = current_price if (current_price and current_price > 0) else last_candle_price
-        ohlcv_text   = "\n\n".join(tf_blocks) if tf_blocks else "No candle data available."
+        live_price = current_price if (current_price and current_price > 0) else last_candle_price
+        ohlcv_text = "\n\n".join(tf_blocks) if tf_blocks else "No candle data available."
+
+        # ── 2b. Build performance context ─────────────────────────────
+        stats_text = _fmt_stats(stats)
+        history_text = _fmt_history(history_signals)
 
         prompt_text = f"""Analyze {symbol}
 
@@ -361,32 +437,54 @@ Cross-reference: what you see visually in the charts should match the OHLCV numb
 ⚠️ CURRENT REALTIME PRICE: {live_price}
 (This is the live ticker price — use it as the reference for entry placement)
 
-----------------------------------------
+---
+PERFORMANCE CONTEXT (use this to calibrate confidence):
+{stats_text}
+
+{history_text}
+
+---
 VOID POSITION RULE (CRITICAL):
-- LONG  → void MUST be BELOW current price ({live_price})
+- LONG → void MUST be BELOW current price ({live_price})
 - SHORT → void MUST be ABOVE current price ({live_price})
 - If void is on the wrong side → IGNORE IT
 - If no valid void on correct side → NO TRADE
 
 ENTRY DIRECTION RULE (CRITICAL — violations cause instant loss):
-- LONG  → entry MUST be BELOW {live_price}
+- LONG → entry MUST be BELOW {live_price}
 - SHORT → entry MUST be ABOVE {live_price}
-- NEVER: ❌ LONG above price  |  ❌ SHORT below price
+- NEVER: ❌ LONG above price | ❌ SHORT below price
 
-----------------------------------------
+---
 Respond in this EXACT JSON format ONLY — no preamble, no markdown:
 
 {{
-  "trend":        "UP" or "DOWN" or "SIDEWAYS",
-  "pattern":      "brief description of void/wick pattern detected",
-  "decision":     "LONG" or "SHORT" or "NO TRADE",
-  "entry":        <float entry price, or null if NO TRADE>,
-  "tp":           <float take-profit price, or null if NO TRADE>,
-  "sl":           <float stop-loss price, or null if NO TRADE>,
-  "invalidation": <float price that completely invalidates the setup>,
-  "reason":       "short explanation referencing the void/wick imbalance",
-  "confidence":   <integer 0-100>
+  "trend": "UP" or "DOWN" or "SIDEWAYS",
+  "pattern": "brief description of void/wick pattern detected",
+  "decision": "LONG" or "SHORT" or "NO TRADE",
+  "entry": <number>,
+  "tp1": <number>,
+  "tp2": <number>,
+  "tp_max": <number>,
+  "sl": <number>,
+  "sl_trigger_price": <number or null>,
+  "invalidation": <number>,
+  "reason": "short explanation referencing the void/wick imbalance",
+  "confidence": <0-100>
 }}
+
+TP RULES:
+- tp1 = nearest target (1:1~1:2 R/R). MUST be realistic.
+- tp2 = intermediate target (1:2~1:3 R/R). MUST be further than tp1.
+- tp_max = max extension target (1:3+ R/R or next HTF level). MUST be furthest.
+- For LONG: entry < tp1 < tp2 < tp_max
+- For SHORT: entry > tp1 > tp2 > tp_max
+
+SL_TRIGGER_PRICE RULES:
+- If you expect price to hit tp1 and then want SL moved to breakeven → set sl_trigger_price slightly beyond tp1
+- For LONG: sl_trigger_price > tp1 (above tp1 to confirm hit)
+- For SHORT: sl_trigger_price < tp1 (below tp1 to confirm hit)
+- If no such scenario → set to null
 
 If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a trade."""
 
@@ -406,14 +504,14 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
 
         # ── 4. Call Qwen API (retry once after token refresh) ─────────
         payload = {
-            "model":         QWEN_MODEL,
+            "model": QWEN_MODEL,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": content},
+                {"role": "user", "content": content},
             ],
-            "stream":        False,
+            "stream": False,
             "thinking_mode": QWEN_THINKING,
-            "max_tokens":    2000,
+            "max_tokens": 2500,
         }
 
         data = None
@@ -426,7 +524,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                         CHAT_URL,
                         headers={
                             "Authorization": f"Bearer {self.token}",
-                            "Content-Type":  "application/json",
+                            "Content-Type": "application/json",
                         },
                         json=payload,
                         timeout=180,
@@ -449,7 +547,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                         return self._no_trade(f"HTTP {resp.status_code}")
 
                     data = resp.json()
-                    break   # ← success, exit retry loop
+                    break  # ← success, exit retry loop
 
                 except httpx.TimeoutException:
                     logger.error(f"{tag} Timeout for {symbol}")
@@ -458,90 +556,98 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                     logger.error(f"{tag} Request exception for {symbol}: {e}", exc_info=True)
                     return self._no_trade(f"Request error: {e}")
 
-            if data is None:
-                return self._no_trade("No response after retries")
+        if data is None:
+            return self._no_trade("No response after retries")
 
         # ── 5. Extract response text ──────────────────────────────────
-            try:
+        try:
+            full_text = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                or ""
+            )
+            # Some implementations put thinking in a separate field
+            if not full_text:
                 full_text = (
                     data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
+                    .get("message", {})
+                    .get("reasoning_content", "")
                     or ""
                 )
-            # Some implementations put thinking in a separate field
-                if not full_text:
-                    full_text = (
-                        data.get("choices", [{}])[0]
-                            .get("message", {})
-                            .get("reasoning_content", "")
-                        or ""
-                    )
-            except Exception:
-                return self._no_trade("Failed to extract response content")
+        except Exception:
+            return self._no_trade("Failed to extract response content")
 
-            logger.info(f"{tag} Raw response for {symbol} ({len(full_text)} chars):\n{full_text[:600]}")
-            print(f"{tag} RAW [{symbol}]: {full_text[:400]}")
+        logger.info(f"{tag} Raw response for {symbol} ({len(full_text)} chars):\n{full_text[:600]}")
+        print(f"{tag} RAW [{symbol}]: {full_text[:400]}")
 
-            if not full_text.strip():
-                return self._no_trade("Empty AI response")
+        if not full_text.strip():
+            return self._no_trade("Empty AI response")
 
         # ── 6. Parse JSON from response ───────────────────────────────
-            start = full_text.find("{")
-            end   = full_text.rfind("}") + 1
+        start = full_text.find("{")
+        end = full_text.rfind("}") + 1
 
-            if start < 0 or end <= start:
-                logger.error(f"{tag} No JSON found for {symbol}. Response: {full_text[:500]}")
-                return self._no_trade("No JSON in AI response")
+        if start < 0 or end <= start:
+            logger.error(f"{tag} No JSON found for {symbol}. Response: {full_text[:500]}")
+            return self._no_trade("No JSON in AI response")
 
-            json_str = full_text[start:end]
-            try:
-                result = json.loads(json_str)
-            except json.JSONDecodeError as je:
-                logger.error(f"{tag} JSON decode error for {symbol}: {je}")
-                return self._no_trade(f"JSON parse error: {je}")
+        json_str = full_text[start:end]
+        try:
+            result = json.loads(json_str)
+        except json.JSONDecodeError as je:
+            logger.error(f"{tag} JSON decode error for {symbol}: {je}")
+            return self._no_trade(f"JSON parse error: {je}")
 
-            decision = result.get("decision", "NO TRADE").upper().strip()
-            if decision not in ("LONG", "SHORT", "NO TRADE"):
-                logger.warning(f"{tag} Unexpected decision '{decision}' for {symbol} — forcing NO TRADE")
-                decision = "NO TRADE"
+        decision = result.get("decision", "NO TRADE").upper().strip()
+        if decision not in ("LONG", "SHORT", "NO TRADE"):
+            logger.warning(f"{tag} Unexpected decision '{decision}' for {symbol} — forcing NO TRADE")
+            decision = "NO TRADE"
 
-            parsed = {
-                "trend":        result.get("trend", "SIDEWAYS"),
-                "pattern":      result.get("pattern", ""),
-                "decision":     decision,
-                "entry":        result.get("entry"),
-                "tp":           result.get("tp"),
-                "sl":           result.get("sl"),
-                "invalidation": result.get("invalidation"),
-                "reason":       result.get("reason", ""),
-                "confidence":   int(result.get("confidence", 0)),
-            }
+        parsed = {
+            "trend": result.get("trend", "SIDEWAYS"),
+            "pattern": result.get("pattern", ""),
+            "decision": decision,
+            "entry": result.get("entry"),
+            "tp1": result.get("tp1"),
+            "tp2": result.get("tp2"),
+            "tp_max": result.get("tp_max"),
+            "tp": result.get("tp1"),  # backward compat
+            "sl": result.get("sl"),
+            "sl_trigger_price": result.get("sl_trigger_price"),
+            "invalidation": result.get("invalidation"),
+            "reason": result.get("reason", ""),
+            "confidence": int(result.get("confidence", 0)),
+        }
 
-            print(
-                f"{tag} ✅ {symbol} → {decision} "
-                f"entry={parsed['entry']} conf={parsed['confidence']}%"
-            )
-            logger.info(
-                f"{tag} Signal parsed for {symbol}: "
-                f"decision={decision} entry={parsed['entry']} confidence={parsed['confidence']}"
-            )
-            return parsed
+        print(
+            f"{tag} ✅ {symbol} → {decision} "
+            f"entry={parsed['entry']} tp1={parsed['tp1']} tp2={parsed['tp2']} max={parsed['tp_max']} conf={parsed['confidence']}%"
+        )
+        logger.info(
+            f"{tag} Signal parsed for {symbol}: "
+            f"decision={decision} entry={parsed['entry']} tp1={parsed['tp1']} tp2={parsed['tp2']} max={parsed['tp_max']} confidence={parsed['confidence']}"
+        )
+        return parsed
 
-        # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def _no_trade(self, reason: str) -> dict:
         logger.warning(f"{self._tag} NO TRADE — {reason}")
         return {
-            "trend":        "SIDEWAYS",
-            "pattern":      "none",
-            "decision":     "NO TRADE",
-            "entry":        None,
-            "tp":           None,
-            "sl":           None,
+            "trend": "SIDEWAYS",
+            "pattern": "none",
+            "decision": "NO TRADE",
+            "entry": None,
+            "tp1": None,
+            "tp2": None,
+            "tp_max": None,
+            "tp": None,
+            "sl": None,
+            "sl_trigger_price": None,
             "invalidation": None,
-            "reason":       reason,
-            "confidence":   0,
+            "reason": reason,
+            "confidence": 0,
         }
 
     async def close(self):
@@ -557,17 +663,17 @@ class ParallelQwenAI:
     Manages up to 5 QwenAIClient instances.
 
     analyze_batch(items):
-        Each item gets its own client (modulo assignment → round-robin).
-        All items run concurrently — same parallel behaviour as the old
-        ParallelDeepSeekAI.analyze_batch().
+    Each item gets its own client (modulo assignment → round-robin).
+    All items run concurrently — same parallel behaviour as the old
+    ParallelDeepSeekAI.analyze_batch().
 
     analyze(symbol, candles_by_tf):
-        Legacy single-symbol call; uses the next client in round-robin order.
+    Legacy single-symbol call; uses the next client in round-robin order.
     """
 
     def __init__(self):
         self.clients: List[QwenAIClient] = []
-        self._rr_idx = 0   # round-robin counter
+        self._rr_idx = 0  # round-robin counter
 
         for slot in range(1, 6):
             token = os.getenv(f"QWEN_TOKEN_{slot}", "").strip()
@@ -596,7 +702,8 @@ class ParallelQwenAI:
         Analyze a list of symbols concurrently.
 
         items : list of (symbol, candles_by_tf) or
-                         (symbol, candles_by_tf, current_price)
+                (symbol, candles_by_tf, current_price) or
+                (symbol, candles_by_tf, current_price, stats, history_signals)
         Returns results in the SAME ORDER as input items.
         """
         if not self.clients:
@@ -604,11 +711,13 @@ class ParallelQwenAI:
 
         tasks = []
         for i, item in enumerate(items):
-            sym    = item[0]
-            tfs    = item[1]
-            price  = item[2] if len(item) > 2 else None
-            client = self.clients[i % len(self.clients)]   # round-robin
-            tasks.append(asyncio.create_task(client.analyze(sym, tfs, price)))
+            sym = item[0]
+            tfs = item[1]
+            price = item[2] if len(item) > 2 else None
+            stats = item[3] if len(item) > 3 else None
+            history = item[4] if len(item) > 4 else None
+            client = self.clients[i % len(self.clients)]  # round-robin
+            tasks.append(asyncio.create_task(client.analyze(sym, tfs, price, stats, history)))
 
         # asyncio.gather preserves order
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -625,26 +734,32 @@ class ParallelQwenAI:
         symbol: str,
         candles_by_tf: dict,
         current_price: float = None,
+        stats: dict = None,
+        history_signals: list = None,
     ) -> dict:
         if not self.clients:
             return self._no_trade("No tokens configured")
         client = self.clients[self._rr_idx % len(self.clients)]
         self._rr_idx += 1
-        return await client.analyze(symbol, candles_by_tf, current_price)
+        return await client.analyze(symbol, candles_by_tf, current_price, stats, history_signals)
 
     # ------------------------------------------------------------------
 
     def _no_trade(self, reason: str) -> dict:
         return {
-            "trend":        "SIDEWAYS",
-            "pattern":      "none",
-            "decision":     "NO TRADE",
-            "entry":        None,
-            "tp":           None,
-            "sl":           None,
+            "trend": "SIDEWAYS",
+            "pattern": "none",
+            "decision": "NO TRADE",
+            "entry": None,
+            "tp1": None,
+            "tp2": None,
+            "tp_max": None,
+            "tp": None,
+            "sl": None,
+            "sl_trigger_price": None,
             "invalidation": None,
-            "reason":       reason,
-            "confidence":   0,
+            "reason": reason,
+            "confidence": 0,
         }
 
     async def close(self):
@@ -653,6 +768,6 @@ class ParallelQwenAI:
 
 
 # ---------------------------------------------------------------------------
-# Singleton — drop-in replacement for:   from services.deepseek_ai import deepseek_ai
+# Singleton — drop-in replacement for: from services.deepseek_ai import deepseek_ai
 # ---------------------------------------------------------------------------
 qwen_ai = ParallelQwenAI()
