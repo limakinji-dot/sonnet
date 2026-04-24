@@ -1,57 +1,44 @@
-"""
-History routes — signal-only app (no Bitget, no auto-trade).
-All history comes from the persisted signals.json via bot_engine state.
-"""
+from fastapi import APIRouter, Request, Query
+from typing import Optional
 
-import json
-import os
-from pathlib import Path
-from fastapi import APIRouter, Request
+from services.database import db_get_signals
+from services.auth_service import decode_token
 
 router = APIRouter()
 
-# FIXED: use the same env var as bot_engine.py so both point to the same file.
-# On Railway this resolves to /app/data/signals.json (set via SIGNALS_FILE env var).
-# Locally it defaults to signals.json in the working directory.
-SIGNALS_FILE = Path(os.getenv("SIGNALS_FILE", "signals.json"))
-
-
-def _load_signals() -> list:
-    try:
-        if SIGNALS_FILE.exists():
-            return json.loads(SIGNALS_FILE.read_text())
-    except Exception:
-        pass
-    return []
-
+def _get_user_id_from_request(request: Request) -> Optional[str]:
+    token = request.headers.get("authorization", "")
+    if token.startswith("Bearer "):
+        payload = decode_token(token[7:])
+        if payload:
+            return payload.get("sub")
+    user_param = request.query_params.get("user")
+    return user_param if user_param else None
 
 def _pnl(s):
     return float(s.get("pnl_pct") or 0)
 
-
 @router.get("/signals")
-async def get_signal_history(limit: int = 100):
-    """Return all persisted signals (newest first)."""
-    signals = _load_signals()
-    return {"data": signals[:limit], "total": len(signals)}
-
+async def get_signal_history(limit: int = 100, request: Request = None, user: Optional[str] = Query(None)):
+    user_id = user or _get_user_id_from_request(request)
+    signals = db_get_signals(user_id=user_id, limit=limit)
+    return {"data": signals, "total": len(signals)}
 
 @router.get("/signals/{symbol}")
-async def get_signal_history_by_symbol(symbol: str, limit: int = 100):
-    """Return signals filtered by symbol."""
-    signals = [s for s in _load_signals() if s.get("symbol") == symbol]
+async def get_signal_history_by_symbol(symbol: str, limit: int = 100, request: Request = None, user: Optional[str] = Query(None)):
+    user_id = user or _get_user_id_from_request(request)
+    all_signals = db_get_signals(user_id=user_id, limit=1000)
+    signals = [s for s in all_signals if s.get("symbol") == symbol]
     return {"data": signals[:limit], "total": len(signals)}
 
-
 @router.get("/summary")
-async def get_summary_all():
-    """Win/loss summary across ALL signals."""
-    signals = _load_signals()
-
+async def get_summary_all(request: Request = None, user: Optional[str] = Query(None)):
+    user_id = user or _get_user_id_from_request(request)
+    signals = db_get_signals(user_id=user_id, limit=10000)
+    
     closed   = [s for s in signals if s.get("result") in ("TP", "SL")]
     wins     = [s for s in closed  if s.get("result") == "TP"]
     losses   = [s for s in closed  if s.get("result") == "SL"]
-    no_trade = [s for s in signals if s.get("status") == "NO TRADE"]
     open_sig = [s for s in signals if s.get("status") == "OPEN"]
 
     total_pnl = sum(_pnl(s) for s in closed)
@@ -63,7 +50,6 @@ async def get_summary_all():
             "total_signals":  len(signals),
             "closed_trades":  len(closed),
             "open_signals":   len(open_sig),
-            "no_trade_count": len(no_trade),
             "wins":           len(wins),
             "losses":         len(losses),
             "winrate":        winrate,
@@ -72,11 +58,11 @@ async def get_summary_all():
         }
     }
 
-
 @router.get("/summary/{symbol}")
-async def get_summary_by_symbol(symbol: str):
-    """Win/loss summary for a specific symbol."""
-    signals = [s for s in _load_signals() if s.get("symbol") == symbol]
+async def get_summary_by_symbol(symbol: str, request: Request = None, user: Optional[str] = Query(None)):
+    user_id = user or _get_user_id_from_request(request)
+    all_signals = db_get_signals(user_id=user_id, limit=10000)
+    signals = [s for s in all_signals if s.get("symbol") == symbol]
 
     closed  = [s for s in signals if s.get("result") in ("TP", "SL")]
     wins    = [s for s in closed  if s.get("result") == "TP"]
