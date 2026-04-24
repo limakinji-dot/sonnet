@@ -7,10 +7,20 @@ from typing import Optional
 from services.ws_manager import ws_manager
 from services.virtual_exchange import virtual_exchange
 from services.bot_manager import bot_manager
-from services.auth_service import decode_token, get_admin_id
-from services.database import get_user_by_id, db_get_signals
+from services.auth_service import decode_token
+from services.database import get_user_by_id, db_get_signals, get_user_by_username
 
 router = APIRouter()
+
+# ── Helper: Ambil Admin ID ──
+_admin_user_id = None
+
+def _get_admin_id() -> Optional[str]:
+    global _admin_user_id
+    if _admin_user_id is None:
+        admin = get_user_by_username(os.getenv("ADMIN_USERNAME", "admin"))
+        _admin_user_id = admin["id"] if admin else None
+    return _admin_user_id
 
 def _get_user_id(request: Request) -> Optional[str]:
     token = request.headers.get("authorization", "")
@@ -25,7 +35,7 @@ def _resolve_user_id(request: Request, user_query: Optional[str]) -> Optional[st
     user_id = user_query or _get_user_id(request)
     if user_id:
         return user_id
-    return get_admin_id()
+    return _get_admin_id()
 
 @router.post("/verify-pin")
 async def verify_pin(request: Request):
@@ -66,8 +76,25 @@ async def stop_bot(request: Request, user_id: Optional[str] = Depends(_get_user_
 @router.get("/state")
 async def get_state(request: Request, user: Optional[str] = Query(None)):
     user_id = _resolve_user_id(request, user)
-    engine = bot_manager.get_engine(user_id) or bot_manager.global_engine
-    return engine.get_state()
+    engine = bot_manager.get_engine(user_id)
+
+    if engine:
+        return engine.get_state()
+
+    # Fallback: cek persist state
+    is_running = bot_manager.is_running(user_id)
+    return {
+        "status": "RUNNING" if is_running else "IDLE",
+        "running": is_running,
+        "trade_count": 0,
+        "win_count": 0,
+        "loss_count": 0,
+        "winrate": 0,
+        "total_pnl_pct": 0.0,
+        "total_pnl_usdt": 0.0,
+        "active_signal_count": 0,
+        "max_active_signals": int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
+    }
 
 @router.get("/signals")
 async def get_signals(request: Request, limit: int = 50, user: Optional[str] = Query(None)):
