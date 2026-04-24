@@ -2,19 +2,31 @@ import os
 from fastapi import APIRouter, Request, Query
 from typing import Optional
 
-from services.database import db_get_signals, get_user_by_username
+from services.database import db_get_signals, get_user_by_username, list_users
 from services.auth_service import decode_token
 
 router = APIRouter()
 
-# ── Helper: Ambil Admin ID sekali di module level ──
+# ── Helper: Ambil Admin ID dengan fallback ──
 _admin_user_id = None
 
 def _get_admin_id() -> Optional[str]:
     global _admin_user_id
     if _admin_user_id is None:
-        admin = get_user_by_username(os.getenv("ADMIN_USERNAME", "admin"))
-        _admin_user_id = admin["id"] if admin else None
+        admin_username = os.getenv("ADMIN_USERNAME", "admin")
+        admin = get_user_by_username(admin_username)
+        if admin:
+            _admin_user_id = admin["id"]
+        else:
+            # 🔥 Fallback: cari user mana pun yang is_admin=1
+            users = list_users()
+            for u in users:
+                if u.get("is_admin"):
+                    _admin_user_id = u["id"]
+                    print(f"[Auth] Fallback admin found: {u['username']} ({_admin_user_id})")
+                    break
+            if _admin_user_id is None:
+                print(f"[Auth] CRITICAL: No admin user found! Checked username: {admin_username}")
     return _admin_user_id
 
 def _get_user_id_from_request(request: Request) -> Optional[str]:
