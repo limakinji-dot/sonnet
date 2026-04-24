@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuthContext";
 import { updateUserData } from "@/lib/auth";
+import { startBot, stopBot } from "@/lib/api";
 
 export default function SettingsPanel() {
   const { userData, userId, refreshUser } = useAuth();
@@ -10,6 +11,7 @@ export default function SettingsPanel() {
   const [margin, setMargin] = useState(userData?.margin || 100);
   const [isRunning, setIsRunning] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [botError, setBotError] = useState<string | null>(null);
 
   useEffect(() => {
     if (userData) {
@@ -26,8 +28,39 @@ export default function SettingsPanel() {
     setTimeout(() => setSaved(false), 2000);
   };
 
+  const handleStart = async () => {
+    setBotError(null);
+    try {
+      const res = await startBot(
+        { symbol: "BTC_USDT", tp_pct: 0.004, sl_pct: 0.002, interval: 60 },
+        userId || undefined
+      );
+      if (res.ok) {
+        setIsRunning(true);
+      } else {
+        setBotError(res.reason || "Failed to start bot");
+      }
+    } catch (e: any) {
+      setBotError(e.message || "Network error");
+    }
+  };
+
+  const handleStop = async () => {
+    setBotError(null);
+    try {
+      const res = await stopBot(userId || undefined);
+      if (res.ok) {
+        setIsRunning(false);
+      } else {
+        setBotError(res.reason || "Failed to stop bot");
+      }
+    } catch (e: any) {
+      setBotError(e.message || "Network error");
+    }
+  };
+
   return (
-    <div className="glass rounded-2xl p-6 space-y-6">
+    <div className="glass rounded-2xl p-4 sm:p-6 space-y-4 sm:space-y-6">
       <div className="space-y-4">
         <div className="space-y-2">
           <div className="flex justify-between text-xs font-mono text-white/60">
@@ -66,20 +99,26 @@ export default function SettingsPanel() {
 
       <div className="pt-4 border-t border-white/5 flex gap-3">
         <button
-          onClick={() => setIsRunning(true)}
+          onClick={handleStart}
           disabled={isRunning}
           className="flex-1 py-3 rounded-lg bg-[#4ade80]/10 border border-[#4ade80]/30 text-[#4ade80] text-xs font-mono font-bold tracking-widest hover:bg-[#4ade80]/20 transition-colors disabled:opacity-50"
         >
           {isRunning ? "RUNNING..." : "START BOT"}
         </button>
         <button
-          onClick={() => setIsRunning(false)}
+          onClick={handleStop}
           disabled={!isRunning}
           className="flex-1 py-3 rounded-lg bg-[#f87171]/10 border border-[#f87171]/30 text-[#f87171] text-xs font-mono font-bold tracking-widest hover:bg-[#f87171]/20 transition-colors disabled:opacity-50"
         >
           STOP BOT
         </button>
       </div>
+
+      {botError && (
+        <p className="text-[10px] font-mono text-[#f87171] text-center">
+          {botError}
+        </p>
+      )}
 
       <button
         onClick={handleSave}
