@@ -5,7 +5,7 @@ import jwt
 import bcrypt
 from typing import Optional, Dict, Any
 
-from services.database import get_user_by_username, get_user_by_id, create_user
+from services.database import get_user_by_username, get_user_by_id, create_user, update_user
 
 JWT_SECRET = os.getenv("JWT_SECRET", "agent-x-secret-change-me-in-production")
 JWT_ALGO = "HS256"
@@ -13,6 +13,11 @@ JWT_EXPIRY = 86400 * 7  # 7 hari
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSKEY = os.getenv("ADMIN_PASSKEY", "admin123")
+
+# ── Baca env variables untuk trading config ──
+ADMIN_INITIAL_BALANCE = float(os.getenv("INITIAL_BALANCE", "1000"))
+ADMIN_LEVERAGE = int(os.getenv("TRADE_LEVERAGE", "10"))
+ADMIN_MARGIN = float(os.getenv("TRADE_ENTRY_USDT", "100"))
 
 # ── Global admin ID (di-set saat startup) ──
 _admin_id: Optional[str] = None
@@ -55,19 +60,30 @@ def authenticate_user(username: str, passkey: str) -> Optional[Dict[str, Any]]:
 def seed_admin():
     global _admin_id
     existing = get_user_by_username(ADMIN_USERNAME)
+    
     if not existing:
+        # ── Create admin baru pakai env values ──
         uid = str(uuid.uuid4())
         create_user(
             user_id=uid,
             username=ADMIN_USERNAME,
             passkey_hash=hash_passkey(ADMIN_PASSKEY),
             is_admin=1,
-            leverage=10,
-            margin=100,
-            balance=1000,
+            leverage=ADMIN_LEVERAGE,
+            margin=ADMIN_MARGIN,
+            balance=ADMIN_INITIAL_BALANCE,
         )
         _admin_id = uid
-        print(f"[Auth] Admin seeded: {ADMIN_USERNAME} ({_admin_id})")
+        print(f"[Auth] Admin seeded: {ADMIN_USERNAME} ({_admin_id}) | "
+              f"balance={ADMIN_INITIAL_BALANCE}, leverage={ADMIN_LEVERAGE}x, margin={ADMIN_MARGIN}")
     else:
+        # ── Update admin existing dengan env values terbaru ──
         _admin_id = existing["id"]
-        print(f"[Auth] Admin already exists: {ADMIN_USERNAME} ({_admin_id})")
+        update_user(_admin_id, {
+            "balance": ADMIN_INITIAL_BALANCE,
+            "initial_balance": ADMIN_INITIAL_BALANCE,
+            "leverage": ADMIN_LEVERAGE,
+            "margin": ADMIN_MARGIN,
+        })
+        print(f"[Auth] Admin updated: {ADMIN_USERNAME} ({_admin_id}) | "
+              f"balance={ADMIN_INITIAL_BALANCE}, leverage={ADMIN_LEVERAGE}x, margin={ADMIN_MARGIN}")
