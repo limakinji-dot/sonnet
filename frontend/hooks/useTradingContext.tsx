@@ -1,8 +1,8 @@
 "use client";
 
-import React, { createContext, useContext, useReducer, useEffect } from "react";
+import React, { createContext, useContext, useReducer, useEffect, useCallback } from "react";
 import { useAuth } from "./useAuthContext";
-import { getCurrentUser } from "@/lib/auth";
+import { getBotState, getBalance, getSignalHistory, getHistorySummary } from "@/lib/api";
 import type { Signal, BotState, BalanceInfo, WSEvent } from "@/lib/types";
 
 interface TradingContextType {
@@ -84,30 +84,26 @@ function reducer(state: BotState, action: Action): BotState {
 const TradingContext = createContext<TradingContextType | null>(null);
 
 export function TradingProvider({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, userId } = useAuth();
+  const { isAuthenticated, userId, userData } = useAuth();
   const [state, dispatch] = useReducer(reducer, initialState);
   const [balance, setBalance] = React.useState<BalanceInfo>(initialBalance);
   const [latestTheme, setLatestTheme] = React.useState<"profit" | "loss" | "neutral">("neutral");
 
   // Override balance & leverage dari user data kalau login
   useEffect(() => {
-    if (isAuthenticated && userId) {
-      const user = getCurrentUser();
-      if (user) {
-        setBalance({
-          balance: user.balance,
-          initial_balance: user.initialBalance,
-          leverage: user.leverage,
-          entry_usdt: user.margin,
-        });
-      }
+    if (isAuthenticated && userData) {
+      setBalance({
+        balance: userData.balance,
+        initial_balance: userData.initial_balance,
+        leverage: userData.leverage,
+        entry_usdt: userData.margin,
+      });
     } else {
-      // Reset ke global default
       setBalance(initialBalance);
     }
-  }, [isAuthenticated, userId]);
+  }, [isAuthenticated, userData]);
 
-  // WebSocket connection
+  // WebSocket connection — kirim user_id kalau authenticated
   useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${proto}//${window.location.host}/api/bot/ws`;
@@ -116,6 +112,13 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
 
     const connect = () => {
       ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        // Kirim auth info via WS kalau authenticated
+        if (isAuthenticated && userId) {
+          ws?.send(JSON.stringify({ type: "auth", user_id: userId }));
+        }
+      };
 
       ws.onmessage = (evt) => {
         try {
@@ -175,23 +178,27 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, []);
+  }, [isAuthenticated, userId]);
 
-  // Initial REST fetch — tambah query user kalau login
+  // Initial REST fetch — tambah user_id kalau login
   useEffect(() => {
-    const user = isAuthenticated ? getCurrentUser() : null;
-    const userParam = user ? `?user=${user.id}` : "";
+    const fetchData = async () => {
+      try {
+        const [stateData, balanceData] = await Promise.all([
+          getBotState(isAuthenticated ? userId || undefined : undefined),
+          getBalance(isAuthenticated ? userId || undefined : undefined),
+        ]);
+        dispatch({ type: "SET_STATE", payload: stateData });
+        setBalance(balanceData.data);
+      } catch (e) {
+        console.error("Failed to fetch initial data:", e);
+      }
+    };
 
-    fetch(`/api/bot/state${userParam}`)
-      .then((r) => r.json())
-      .then((data) => dispatch({ type: "SET_STATE", payload: data }))
-      .catch(() => {});
-
-    fetch(`/api/trading/balance${userParam}`)
-      .then((r) => r.json())
-      .then((data) => setBalance(data.data))
-      .catch(() => {});
-  }, [isAuthenticated]);
+    fetchData();
+    const interval = setInterval(fetchData, 30000); // refresh tiap 30s
+    return () => clearInterval(interval);
+  }, [isAuthenticated, userId]);
 
   // Update DOM theme attribute for global CSS variables
   useEffect(() => {
