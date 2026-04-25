@@ -12,18 +12,45 @@ function getTimestamp(): string {
   return String(Date.now());
 }
 
+// ── Token helpers (localStorage) ──
+const TOKEN_KEY = "agent-x-token";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function removeToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(TOKEN_KEY);
+}
+
 export async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<any> {
   const url = `${API_BASE}${path}`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-API-Key": API_KEY,
+    "X-Timestamp": getTimestamp(),
+  };
+
+  const token = getToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(url, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": API_KEY,
-      "X-Timestamp": getTimestamp(),
-      ...(options.headers || {}),
+      ...headers,
+      ...(options.headers as Record<string, string> || {}),
     },
   });
 
@@ -48,6 +75,10 @@ export async function login(body: { username: string; passkey: string }) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function getMe() {
+  return apiFetch("/api/auth/me");
 }
 
 // ── Bot ──
