@@ -25,7 +25,6 @@ export default function TradeHistoryTable({ limit = 20, compact = false }: Trade
   const { userId, isAuthenticated } = useAuth();
   const [apiHistory, setApiHistory] = useState<any[]>([]);
 
-  // Fetch persistent history from API (survive refresh)
   useEffect(() => {
     let mounted = true;
     getTradeHistory(100, isAuthenticated ? userId || undefined : undefined)
@@ -37,7 +36,6 @@ export default function TradeHistoryTable({ limit = 20, compact = false }: Trade
     return () => { mounted = false; };
   }, [isAuthenticated, userId]);
 
-  // Kalau reset terjadi, clear cache & refetch
   useEffect(() => {
     if (state.trade_count === 0 && state.win_count === 0 && state.loss_count === 0) {
       setApiHistory([]);
@@ -47,7 +45,6 @@ export default function TradeHistoryTable({ limit = 20, compact = false }: Trade
     }
   }, [state.trade_count, state.win_count, state.loss_count, isAuthenticated, userId]);
 
-  // Merge API history dengan real-time WS updates
   const history = useMemo(() => {
     const map = new Map<string, any>();
     apiHistory.forEach((s) => map.set(s.id, s));
@@ -71,12 +68,7 @@ export default function TradeHistoryTable({ limit = 20, compact = false }: Trade
         <thead>
           <tr className="border-b border-white/5">
             {headers.map((h) => (
-              <th
-                key={h}
-                className="text-left py-2 px-2 text-[8px] font-mono text-white/20 tracking-widest"
-              >
-                {h}
-              </th>
+              <th key={h} className="text-left py-2 px-2 text-[8px] font-mono text-white/20 tracking-widest">{h}</th>
             ))}
           </tr>
         </thead>
@@ -90,68 +82,35 @@ export default function TradeHistoryTable({ limit = 20, compact = false }: Trade
                 exit={{ opacity: 0 }}
                 className="border-b border-white/[0.02] hover:bg-white/[0.02] transition-colors"
               >
-                <td className="py-2.5 px-2 text-[10px] font-mono text-white font-medium">
-                  {sig.symbol.replace("_USDT", "")}
-                </td>
+                <td className="py-2.5 px-2 text-[10px] font-mono text-white font-medium">{sig.symbol.replace("_USDT", "")}</td>
                 <td className="py-2.5 px-2">
-                  <span
-                    className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
-                      sig.decision === "LONG"
-                        ? "bg-[#4ade80]/10 text-[#4ade80]"
-                        : "bg-[#f87171]/10 text-[#f87171]"
-                    }`}
-                  >
+                  <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${sig.decision === "LONG" ? "bg-[#4ade80]/10 text-[#4ade80]" : "bg-[#f87171]/10 text-[#f87171]"}`}>
                     {sig.decision}
                   </span>
                 </td>
-                <td className="py-2.5 px-2 text-[10px] font-mono text-white/60">
-                  ${formatPrice(sig.entry)}
-                </td>
-
+                <td className="py-2.5 px-2 text-[10px] font-mono text-white/60">${formatPrice(sig.entry)}</td>
                 {!compact && (
                   <>
-                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]">
-                      ${formatPrice(sig.tp1)}
-                    </td>
-                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]/80">
-                      ${formatPrice(sig.tp2)}
-                    </td>
-                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]/60">
-                      ${formatPrice(sig.tp_max)}
-                    </td>
+                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]">${formatPrice(sig.tp1)}</td>
+                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]/80">${formatPrice(sig.tp2)}</td>
+                    <td className="py-2.5 px-2 text-[10px] font-mono text-[#d4a847]/60">${formatPrice(sig.tp_max)}</td>
                   </>
                 )}
-
-                <td className="py-2.5 px-2 text-[10px] font-mono text-white/60">
-                  ${formatPrice(sig.closed_price)}
-                </td>
-                <td
-                  className={`py-2.5 px-2 text-[10px] font-mono font-bold ${
-                    (sig.pnl_pct || 0) >= 0 ? "text-[#4ade80]" : "text-[#f87171]"
-                  }`}
-                >
-                  {(sig.pnl_pct || 0) >= 0 ? "+" : ""}
-                  {sig.pnl_pct?.toFixed(2)}%
+                <td className="py-2.5 px-2 text-[10px] font-mono text-white/60">${formatPrice(sig.closed_price)}</td>
+                <td className={`py-2.5 px-2 text-[10px] font-mono font-bold ${(sig.pnl_pct || 0) >= 0 ? "text-[#4ade80]" : "text-[#f87171]"}`}>
+                  {(sig.pnl_pct || 0) >= 0 ? "+" : ""}{sig.pnl_pct?.toFixed(2)}%
                 </td>
                 <td className="py-2.5 px-2">
-                  <PosterButton
-                    signal={sig}
-                    leverage={balance.leverage}
-                    entryUsdt={balance.entry_usdt}
-                    allowForClosed={true}
-                  />
+                  <PosterButton signal={sig} leverage={balance.leverage} entryUsdt={balance.entry_usdt} allowForClosed={true} />
                 </td>
               </motion.tr>
             ))}
           </AnimatePresence>
         </tbody>
       </table>
-
       {history.length === 0 && (
         <div className="text-center py-8">
-          <p className="text-[10px] font-mono text-white/20 tracking-widest">
-            NO TRADE HISTORY
-          </p>
+          <p className="text-[10px] font-mono text-white/20 tracking-widest">NO TRADE HISTORY</p>
         </div>
       )}
     </div>
