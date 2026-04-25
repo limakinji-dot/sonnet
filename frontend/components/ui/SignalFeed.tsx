@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useTrading } from "@/hooks/useTradingContext";
 import { motion, AnimatePresence } from "framer-motion";
+import PnLPoster from "@/components/ui/PnLPoster";
 
 interface SignalFeedProps {
   limit?: number;
@@ -30,10 +31,19 @@ function formatTime(ts: number | string) {
 export default function SignalFeed({ limit = 10, compact = false }: SignalFeedProps) {
   const { state } = useTrading();
   const [openSignals, setOpenSignals] = useState<any[]>([]);
+  const [posterSignal, setPosterSignal] = useState<any>(null);
+  const [posterMode, setPosterMode] = useState<"pnl" | "roe" | "both">("both");
 
   useEffect(() => {
     const signals = (state.signals || [])
       .filter((s: any) => s.status === "OPEN")
+      .sort((a: any, b: any) => {
+        // Running signals (entry_hit) selalu di atas
+        if (a.entry_hit && !b.entry_hit) return -1;
+        if (!a.entry_hit && b.entry_hit) return 1;
+        // Lalu sort by timestamp desc
+        return (b.timestamp || 0) - (a.timestamp || 0);
+      })
       .slice(0, limit);
     setOpenSignals(signals);
   }, [state.signals, limit]);
@@ -56,10 +66,15 @@ export default function SignalFeed({ limit = 10, compact = false }: SignalFeedPr
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
-            className="glass rounded-xl p-3 sm:p-4 border border-white/5"
+            className={`glass rounded-xl p-3 sm:p-4 border transition-all ${
+              sig.entry_hit
+                ? "border-[#d4a847]/40 shadow-[0_0_20px_rgba(212,168,71,0.1)]"
+                : "border-white/5"
+            }`}
           >
+            {/* Header */}
             <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-mono font-bold text-white">
                   {sig.symbol.replace("_USDT", "")}
                 </span>
@@ -72,6 +87,11 @@ export default function SignalFeed({ limit = 10, compact = false }: SignalFeedPr
                 >
                   {sig.decision}
                 </span>
+                {sig.entry_hit && (
+                  <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-[#d4a847]/10 text-[#d4a847] border border-[#d4a847]/30 animate-pulse">
+                    ● RUNNING
+                  </span>
+                )}
               </div>
               {!compact && (
                 <span className="text-[9px] font-mono text-white/20">
@@ -112,13 +132,26 @@ export default function SignalFeed({ limit = 10, compact = false }: SignalFeedPr
               </div>
             </div>
 
-            {/* Live price */}
-            {!compact && sig.entry_hit && (
-              <div className="flex items-center justify-between pt-2 border-t border-white/5">
-                <span className="text-[8px] font-mono text-white/20">LIVE</span>
-                <span className="text-xs font-mono text-white">
-                  ${formatPrice(sig.current_price)}
-                </span>
+            {/* Live price + Share button (running signals only, non-compact) */}
+            {sig.entry_hit && (
+              <div className={`flex items-center ${!compact ? "justify-between" : "justify-end"} pt-2 border-t border-white/5`}>
+                {!compact && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[8px] font-mono text-white/20">LIVE</span>
+                    <span className="text-xs font-mono text-white">
+                      ${formatPrice(sig.current_price)}
+                    </span>
+                  </div>
+                )}
+                <button
+                  onClick={() => {
+                    setPosterSignal(sig);
+                    setPosterMode("both");
+                  }}
+                  className="text-[9px] font-mono px-3 py-1.5 rounded-lg bg-[#d4a847]/10 border border-[#d4a847]/30 text-[#d4a847] hover:bg-[#d4a847]/20 transition-colors"
+                >
+                  Share Poster
+                </button>
               </div>
             )}
           </motion.div>
@@ -137,6 +170,57 @@ export default function SignalFeed({ limit = 10, compact = false }: SignalFeedPr
           )}
         </div>
       )}
+
+      {/* Poster Share Modal */}
+      <AnimatePresence>
+        {posterSignal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+            onClick={() => setPosterSignal(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="glass-strong rounded-2xl p-6 w-full max-w-sm relative"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setPosterSignal(null)}
+                className="absolute top-3 right-3 text-white/30 hover:text-white/60 text-lg"
+              >
+                ×
+              </button>
+
+              <h3 className="text-center text-[10px] font-mono text-[#d4a847] tracking-[0.3em] mb-4">
+                SHARE POSTER
+              </h3>
+
+              {/* Toggle mode */}
+              <div className="flex gap-2 mb-4">
+                {(["pnl", "roe", "both"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setPosterMode(m)}
+                    className={`flex-1 py-2 rounded-lg text-[10px] font-mono font-bold tracking-wider border transition-colors ${
+                      posterMode === m
+                        ? "bg-[#d4a847]/20 border-[#d4a847]/50 text-[#d4a847]"
+                        : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"
+                    }`}
+                  >
+                    {m === "both" ? "ROE + PnL" : m.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+
+              <PnLPoster signal={posterSignal} mode={posterMode} />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
