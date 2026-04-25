@@ -1,14 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import TradeHistoryTable from "@/components/ui/TradeHistoryTable";
 import { useTrading } from "@/hooks/useTradingContext";
-import type { Signal } from "@/lib/types";
+import { useAuth } from "@/hooks/useAuthContext";
+import { getSummary } from "@/lib/api";
 
 export default function HistoryPage() {
   const { state } = useTrading();
+  const { isAuthenticated, userId } = useAuth();
   const [summary, setSummary] = useState({
     total_signals: 0,
     closed_trades: 0,
@@ -19,13 +21,12 @@ export default function HistoryPage() {
   });
 
   useEffect(() => {
-    fetch("/api/history/summary")
-      .then((r) => r.json())
+    getSummary(isAuthenticated ? userId || undefined : undefined)
       .then((data) => {
         if (data.data) setSummary(data.data);
       })
       .catch(() => {});
-  }, []);
+  }, [isAuthenticated, userId, state.trade_count]);
 
   return (
     <main className="relative min-h-screen bg-[#030303] pt-24 pb-20 px-4 sm:px-8">
@@ -38,7 +39,6 @@ export default function HistoryPage() {
       />
 
       <div className="max-w-5xl mx-auto">
-        {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -76,7 +76,6 @@ export default function HistoryPage() {
           </div>
         </motion.div>
 
-        {/* Summary cards */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -100,7 +99,6 @@ export default function HistoryPage() {
           ))}
         </motion.div>
 
-        {/* Full Table */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
