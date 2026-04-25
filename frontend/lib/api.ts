@@ -11,12 +11,14 @@ export async function apiFetch(
   options: RequestInit = {}
 ): Promise<any> {
   const url = `${API_BASE}${path}`;
+  const token = getToken();  // ← ambil token
   const res = await fetch(url, {
     ...options,
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": API_KEY,
       "X-Timestamp": getTimestamp(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),  // ← auto-kirim token
       ...(options.headers || {}),
     },
   });
