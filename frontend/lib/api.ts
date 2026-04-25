@@ -1,56 +1,17 @@
-const API_BASE =
-  typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE
-    ? process.env.NEXT_PUBLIC_API_BASE
-    : "";
-
-const API_KEY =
-  typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_KEY
-    ? process.env.NEXT_PUBLIC_API_KEY
-    : "";
-
-function getTimestamp(): string {
-  return String(Date.now());
-}
-
-// ── Token helpers (localStorage) ──
-const TOKEN_KEY = "agent-x-token";
-
-export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-export function setToken(token: string) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(TOKEN_KEY, token);
-}
-
-export function removeToken() {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(TOKEN_KEY);
-}
+import { API_BASE, API_KEY, getTimestamp } from "./config";
 
 export async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<any> {
   const url = `${API_BASE}${path}`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-API-Key": API_KEY,
-    "X-Timestamp": getTimestamp(),
-  };
-
-  const token = getToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
   const res = await fetch(url, {
     ...options,
     headers: {
-      ...headers,
-      ...(options.headers as Record<string, string> || {}),
+      "Content-Type": "application/json",
+      "X-API-Key": API_KEY,
+      "X-Timestamp": getTimestamp(),
+      ...(options.headers || {}),
     },
   });
 
@@ -63,22 +24,18 @@ export async function apiFetch(
 }
 
 // ── Auth ──
-export async function register(username: string, passkey: string) {
+export async function register(body: { username: string; passkey: string }) {
   return apiFetch("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify({ username, passkey }),
+    body: JSON.stringify(body),
   });
 }
 
-export async function login(username: string, passkey: string) {
+export async function login(body: { username: string; passkey: string }) {
   return apiFetch("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ username, passkey }),
+    body: JSON.stringify(body),
   });
-}
-
-export async function getMe() {
-  return apiFetch("/api/auth/me");
 }
 
 // ── Bot ──
@@ -111,11 +68,6 @@ export async function getBotSignals(limit: number = 50, userId?: string) {
 export async function getBotStats(userId?: string) {
   const qs = userId ? `?user=${userId}` : "";
   return apiFetch(`/api/bot/stats${qs}`);
-}
-
-export async function resetBot(userId?: string) {
-  const qs = userId ? `?user=${userId}` : "";
-  return apiFetch(`/api/bot/reset${qs}`, { method: "POST" });
 }
 
 // ── Trading ──
