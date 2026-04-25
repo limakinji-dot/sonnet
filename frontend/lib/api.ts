@@ -70,6 +70,11 @@ export async function getBotStats(userId?: string) {
   return apiFetch(`/api/bot/stats${qs}`);
 }
 
+export async function resetBot(userId?: string) {
+  const qs = userId ? `?user=${userId}` : "";
+  return apiFetch(`/api/bot/reset${qs}`, { method: "POST" });
+}
+
 // ── Trading ──
 export async function getBalance(userId?: string) {
   const qs = userId ? `?user=${userId}` : "";
