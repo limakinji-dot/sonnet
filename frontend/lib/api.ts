@@ -63,17 +63,17 @@ export async function apiFetch(
 }
 
 // ── Auth ──
-export async function register(body: { username: string; passkey: string }) {
+export async function register(username: string, passkey: string) {
   return apiFetch("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ username, passkey }),
   });
 }
 
-export async function login(body: { username: string; passkey: string }) {
+export async function login(username: string, passkey: string) {
   return apiFetch("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ username, passkey }),
   });
 }
 
