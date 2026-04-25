@@ -63,7 +63,6 @@ function reducer(state: BotState, action: Action): BotState {
     case "CLOSE_SIGNAL": {
       const existing = state.signals.find((s) => s.id === action.payload.id);
       const alreadyCounted = existing?.status === "CLOSED";
-
       let nextSignals;
       if (existing) {
         nextSignals = state.signals.map((s) =>
@@ -77,11 +76,9 @@ function reducer(state: BotState, action: Action): BotState {
           ...state.signals,
         ].slice(0, 500);
       }
-
       if (alreadyCounted) {
         return { ...state, signals: nextSignals };
       }
-
       const pnl = action.payload.pnl_pct || 0;
       return {
         ...state,
@@ -126,32 +123,25 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     const wsHost = "web-production-e78a1.up.railway.app";
     const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${wsHost}/api/bot/ws`;
-    
     let ws: WebSocket | null = null;
     let reconnectTimer: NodeJS.Timeout;
 
     const connect = () => {
       ws = new WebSocket(wsUrl);
-
       ws.onopen = () => {
         if (isAuthenticated && userId) {
           ws?.send(JSON.stringify({ type: "auth", user_id: userId }));
         }
       };
-
       ws.onmessage = (evt) => {
         try {
           const msg: WSEvent = JSON.parse(evt.data);
           handleEvent(msg);
-        } catch {
-          /* ignore malformed */
-        }
+        } catch {}
       };
-
       ws.onclose = () => {
         reconnectTimer = setTimeout(connect, 3000);
       };
-
       ws.onerror = (err) => {
         console.error("WebSocket error:", err);
       };
@@ -216,7 +206,6 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
         console.error("Failed to fetch initial data:", e);
       }
     };
-
     fetchData();
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
