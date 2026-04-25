@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuthContext";
 import { useState } from "react";
 import LoginModal from "./LoginModal";
@@ -11,8 +11,8 @@ export default function TradingNav() {
   const { isAuthenticated, username, logout } = useAuth();
   const [showLogin, setShowLogin] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
 
-  // Sembunyikan nav di dashboard (dashboard punya layout sendiri)
   if (pathname === "/dashboard") return null;
 
   return (
@@ -37,12 +37,12 @@ export default function TradingNav() {
                 <span className="hidden sm:inline text-[10px] font-mono text-white/30 tracking-widest">
                   {username?.toUpperCase()}
                 </span>
-                <Link
-                  href="/dashboard"
+                <button
+                  onClick={() => router.push("/dashboard")}
                   className="px-4 py-2 rounded-lg bg-[#d4a847]/10 border border-[#d4a847]/30 text-[10px] font-mono font-bold tracking-widest text-[#d4a847] hover:bg-[#d4a847]/20 transition-colors"
                 >
                   DASHBOARD
-                </Link>
+                </button>
                 <button
                   onClick={logout}
                   className="px-4 py-2 rounded-lg glass text-[10px] font-mono text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors"
