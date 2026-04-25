@@ -1,157 +1,231 @@
 "use client";
 
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-} from "react";
-import { login as apiLogin, getMe, removeToken, getToken, setToken } from "@/lib/api";
+import React, { createContext, useContext, useReducer, useEffect, useCallback } from "react";
+import { useAuth } from "./useAuthContext";
+import { getBotState, getBalance } from "@/lib/api";
+import type { Signal, BotState, BalanceInfo, WSEvent } from "@/lib/types";
 
-export interface UserAccount {
-  id: string;
-  username: string;
-  is_admin: boolean;
-  leverage: number;
-  margin: number;
-  balance: number;
-  initial_balance: number;
+interface TradingContextType {
+  state: BotState;
+  balance: BalanceInfo;
+  latestTheme: "profit" | "loss" | "neutral";
+  dispatch: React.Dispatch<Action>;
 }
 
-interface AuthContextType {
-  isAuthenticated: boolean;
-  username: string | null;
-  userId: string | null;
-  userData: UserAccount | null;
-  isAdmin: boolean;
-  login: (
-    username: string,
-    passkey: string
-  ) => Promise<{ success: boolean; error?: string }>;
-  logout: () => void;
-  refreshUser: () => void;
+type Action =
+  | { type: "SET_STATE"; payload: Partial<BotState> }
+  | { type: "SET_BALANCE"; payload: BalanceInfo }
+  | { type: "ADD_SIGNAL"; payload: Signal }
+  | { type: "UPDATE_SIGNAL"; payload: Signal }
+  | { type: "CLOSE_SIGNAL"; payload: Signal }
+  | { type: "SET_THEME"; payload: "profit" | "loss" | "neutral" };
+
+const initialState: BotState = {
+  status: "IDLE",
+  signals: [],
+  trade_count: 0,
+  win_count: 0,
+  loss_count: 0,
+  no_trade_count: 0,
+  total_pnl_pct: 0,
+  total_pnl_usdt: 0,
+  symbols_scanned: 0,
+  active_signal_count: 0,
+  max_active_signals: 20,
+  winrate: 0,
+  balance: 1000,
+};
+
+const initialBalance: BalanceInfo = {
+  balance: 1000,
+  initial_balance: 1000,
+  leverage: 10,
+  entry_usdt: 100,
+};
+
+function reducer(state: BotState, action: Action): BotState {
+  switch (action.type) {
+    case "SET_STATE":
+      return { ...state, ...action.payload };
+    case "ADD_SIGNAL":
+      return {
+        ...state,
+        signals: [action.payload, ...state.signals].slice(0, 500),
+        active_signal_count: state.active_signal_count + 1,
+      };
+    case "UPDATE_SIGNAL": {
+      const idx = state.signals.findIndex((s) => s.id === action.payload.id);
+      if (idx === -1) return state;
+      const next = [...state.signals];
+      next[idx] = { ...next[idx], ...action.payload };
+      return { ...state, signals: next };
+    }
+    case "CLOSE_SIGNAL": {
+      const filtered = state.signals.filter((s) => s.id !== action.payload.id);
+      const pnl = action.payload.pnl_pct || 0;
+      return {
+        ...state,
+        signals: filtered,
+        trade_count: state.trade_count + 1,
+        win_count: pnl >= 0 ? state.win_count + 1 : state.win_count,
+        loss_count: pnl < 0 ? state.loss_count + 1 : state.loss_count,
+        total_pnl_pct: state.total_pnl_pct + pnl,
+        total_pnl_usdt: state.total_pnl_usdt + (action.payload.pnl_usdt || 0),
+        active_signal_count: Math.max(0, state.active_signal_count - 1),
+      };
+    }
+    case "SET_THEME":
+      return state;
+    default:
+      return state;
+  }
 }
 
-const AuthContext = createContext<AuthContextType | null>(null);
+const TradingContext = createContext<TradingContextType | null>(null);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [username, setUsername] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [userData, setUserData] = useState<UserAccount | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+export function TradingProvider({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, userId, userData } = useAuth();
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const [balance, setBalance] = React.useState<BalanceInfo>(initialBalance);
+  const [latestTheme, setLatestTheme] = React.useState<"profit" | "loss" | "neutral">("neutral");
 
-  const refreshUser = useCallback(async () => {
-    const token = getToken();
-    if (!token) {
-      setIsAuthenticated(false);
-      setUsername(null);
-      setUserId(null);
-      setUserData(null);
-      setIsAdmin(false);
-      return;
-    }
-
-    try {
-      const data = await getMe();
-      if (data && data.id) {
-        setIsAuthenticated(true);
-        setUsername(data.username);
-        setUserId(data.id);
-        setUserData(data);
-        setIsAdmin(data.is_admin);
-        if (typeof window !== "undefined") {
-          localStorage.setItem("agent-x-user", JSON.stringify(data));
-        }
-      } else {
-        throw new Error("Invalid user data");
-      }
-    } catch {
-      removeToken();
-      setIsAuthenticated(false);
-      setUsername(null);
-      setUserId(null);
-      setUserData(null);
-      setIsAdmin(false);
-    }
-  }, []);
-
+  // Override balance & leverage dari user data kalau login
   useEffect(() => {
-    // Coba restore dari localStorage dulu buat instant UI
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("agent-x-user");
-      const token = getToken();
-      if (saved && token) {
+    if (isAuthenticated && userData) {
+      setBalance({
+        balance: userData.balance,
+        initial_balance: userData.initial_balance,
+        leverage: userData.leverage,
+        entry_usdt: userData.margin,
+      });
+    } else {
+      setBalance(initialBalance);
+    }
+  }, [isAuthenticated, userData]);
+
+  // WebSocket connection — connect ke backend langsung
+  useEffect(() => {
+    // WebSocket HARUS connect ke backend langsung (tidak bisa lewat Next.js rewrite)
+    const wsHost = "web-production-e78a1.up.railway.app";
+    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProto}//${wsHost}/api/bot/ws`;
+    
+    let ws: WebSocket | null = null;
+    let reconnectTimer: NodeJS.Timeout;
+
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        // Kirim auth info via WS kalau authenticated
+        if (isAuthenticated && userId) {
+          ws?.send(JSON.stringify({ type: "auth", user_id: userId }));
+        }
+      };
+
+      ws.onmessage = (evt) => {
         try {
-          const parsed = JSON.parse(saved);
-          setUserData(parsed);
-          setUsername(parsed.username);
-          setUserId(parsed.id);
-          setIsAdmin(parsed.is_admin);
-          setIsAuthenticated(true);
+          const msg: WSEvent = JSON.parse(evt.data);
+          handleEvent(msg);
         } catch {
-          localStorage.removeItem("agent-x-user");
+          /* ignore malformed */
         }
-      }
-    }
-    // Lalu fetch fresh dari server
-    refreshUser();
-  }, [refreshUser]);
+      };
 
-  const login = useCallback(
-    async (username: string, passkey: string) => {
+      ws.onclose = () => {
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket error:", err);
+      };
+    };
+
+    const handleEvent = (msg: WSEvent) => {
+      switch (msg.event) {
+        case "signal":
+          dispatch({ type: "ADD_SIGNAL", payload: msg.data });
+          break;
+        case "signal_closed":
+          dispatch({ type: "CLOSE_SIGNAL", payload: msg.data });
+          setLatestTheme(getThemeFromPnl(msg.data.pnl_pct));
+          break;
+        case "signal_invalidated":
+          dispatch({
+            type: "UPDATE_SIGNAL",
+            payload: {
+              id: msg.data.id,
+              status: "INVALIDATED",
+              result: "INVALIDATED",
+            } as Signal,
+          });
+          break;
+        case "price_tick": {
+          dispatch({
+            type: "UPDATE_SIGNAL",
+            payload: {
+              id: msg.data.id,
+              current_price: msg.data.price,
+              entry_hit: msg.data.entry_hit,
+            } as Signal,
+          });
+          break;
+        }
+        case "balance_update":
+          setBalance(msg.data);
+          break;
+        case "reset_all":
+          dispatch({ type: "SET_STATE", payload: initialState });
+          break;
+      }
+    };
+
+    connect();
+    return () => {
+      clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, [isAuthenticated, userId]);
+
+  // Initial REST fetch — tambah user_id kalau login
+  useEffect(() => {
+    const fetchData = async () => {
       try {
-        const data = await apiLogin({ username, passkey });  // ← FIX DI SINI
-        if (data.success) {
-          setIsAuthenticated(true);
-          setUsername(data.user.username);
-          setUserId(data.user.id);
-          setUserData(data.user);
-          setIsAdmin(data.user.is_admin);
-          return { success: true };
-        }
-        return { success: false, error: data.detail || "Login failed" };
-      } catch (e: any) {
-        return { success: false, error: e.message || "Network error" };
+        const [stateData, balanceData] = await Promise.all([
+          getBotState(isAuthenticated ? userId || undefined : undefined),
+          getBalance(isAuthenticated ? userId || undefined : undefined),
+        ]);
+        dispatch({ type: "SET_STATE", payload: stateData });
+        setBalance(balanceData.data);
+      } catch (e) {
+        console.error("Failed to fetch initial data:", e);
       }
-    },
-    []
-  );
+    };
 
-  const logout = useCallback(() => {
-    removeToken();
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("agent-x-user");
-    }
-    setIsAuthenticated(false);
-    setUsername(null);
-    setUserId(null);
-    setUserData(null);
-    setIsAdmin(false);
-    window.location.href = "/";
-  }, []);
+    fetchData();
+    const interval = setInterval(fetchData, 30000); // refresh tiap 30s
+    return () => clearInterval(interval);
+  }, [isAuthenticated, userId]);
+
+  // Update DOM theme attribute for global CSS variables
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", latestTheme);
+  }, [latestTheme]);
 
   return (
-    <AuthContext.Provider
-      value={{
-        isAuthenticated,
-        username,
-        userId,
-        userData,
-        isAdmin,
-        login,
-        logout,
-        refreshUser,
-      }}
-    >
+    <TradingContext.Provider value={{ state, balance, latestTheme, dispatch }}>
       {children}
-    </AuthContext.Provider>
+    </TradingContext.Provider>
   );
 }
 
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+export function useTrading() {
+  const ctx = useContext(TradingContext);
+  if (!ctx) throw new Error("useTrading must be used within TradingProvider");
   return ctx;
+}
+
+function getThemeFromPnl(pnl?: number | null): "profit" | "loss" | "neutral" {
+  if (pnl == null) return "neutral";
+  return pnl >= 0 ? "profit" : "loss";
 }
