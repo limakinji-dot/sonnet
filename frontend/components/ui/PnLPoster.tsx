@@ -9,18 +9,32 @@ interface PnLPosterProps {
   signal: Signal;
   leverage?: number;
   entryUsdt?: number;
+  mode?: "pnl" | "roe" | "both";
 }
 
 export default function PnLPoster({
   signal,
   leverage = 10,
   entryUsdt = 100,
+  mode = "both",
 }: PnLPosterProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [qrImg, setQrImg] = useState<HTMLImageElement | null>(null);
 
-  const isProfit = (signal.pnl_pct || 0) >= 0;
+  // Hitung live PnL kalau signal masih OPEN / belum ada pnl_pct
+  const livePnlPct =
+    signal.pnl_pct !== null && signal.pnl_pct !== undefined
+      ? signal.pnl_pct
+      : signal.entry && signal.current_price
+      ? signal.decision === "LONG"
+        ? ((signal.current_price - signal.entry) / signal.entry) * 100
+        : ((signal.entry - signal.current_price) / signal.entry) * 100
+      : 0;
+
+  const livePnlUsdt = (livePnlPct / 100) * leverage * entryUsdt;
+  const isProfit = livePnlPct >= 0;
   const pair = signal.symbol.replace("_USDT", "");
+  const exitPrice = signal.closed_price || signal.current_price || signal.entry;
 
   useEffect(() => {
     QRCode.toDataURL("https://agent-x.vercel.app", {
@@ -58,7 +72,7 @@ export default function PnLPoster({
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
 
-    // Noise texture
+    // Noise
     const noise = document.createElement("canvas");
     noise.width = W;
     noise.height = H;
@@ -116,11 +130,7 @@ export default function PnLPoster({
     ctx.fillText("/USDT", 40 + pairW + 8, 172);
 
     // Tags
-    const tags = [
-      `${leverage}× LEVERAGE`,
-      signal.decision,
-      "FUTURES PERP",
-    ];
+    const tags = [`${leverage}× LEVERAGE`, signal.decision, "FUTURES PERP"];
     let tagX = 40;
     tags.forEach((tag, i) => {
       const colors = [
@@ -160,9 +170,20 @@ export default function PnLPoster({
     ctx.lineTo(W - 40, divY);
     ctx.stroke();
 
-    // PnL Display
-    const pnlStr = `${isProfit ? "+" : ""}${(signal.pnl_pct || 0).toFixed(2)}%`;
-    const roeStr = `${isProfit ? "+" : ""}${((signal.pnl_pct || 0) * leverage).toFixed(2)}% ROE`;
+    // Main Display (mode-aware)
+    let mainStr: string;
+    let subStr: string;
+
+    if (mode === "pnl") {
+      mainStr = `${isProfit ? "+" : ""}${livePnlPct.toFixed(2)}%`;
+      subStr = "PnL";
+    } else if (mode === "roe") {
+      mainStr = `${isProfit ? "+" : ""}${(livePnlPct * leverage).toFixed(2)}%`;
+      subStr = "ROE";
+    } else {
+      mainStr = `${isProfit ? "+" : ""}${livePnlPct.toFixed(2)}%`;
+      subStr = `${isProfit ? "+" : ""}${(livePnlPct * leverage).toFixed(2)}% ROE`;
+    }
 
     ctx.save();
     ctx.shadowColor = isProfit ? "#4ade80" : "#f87171";
@@ -170,7 +191,7 @@ export default function PnLPoster({
     ctx.fillStyle = isProfit ? "#4ade80" : "#f87171";
     ctx.font = "900 96px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(pnlStr, W / 2, 380);
+    ctx.fillText(mainStr, W / 2, 380);
     ctx.restore();
 
     const rg = ctx.createLinearGradient(0, 300, 0, 400);
@@ -178,17 +199,17 @@ export default function PnLPoster({
     rg.addColorStop(0.5, isProfit ? "#4ade80" : "#f87171");
     rg.addColorStop(1, isProfit ? "#16a34a" : "#b91c1c");
     ctx.fillStyle = rg;
-    ctx.fillText(pnlStr, W / 2, 380);
+    ctx.fillText(mainStr, W / 2, 380);
 
     ctx.fillStyle = "rgba(255,255,255,0.4)";
     ctx.font = "500 12px monospace";
-    ctx.fillText(roeStr, W / 2, 410);
+    ctx.fillText(subStr, W / 2, 410);
 
     // Stats
     const stats = [
       { label: "ENTRY", val: `$${formatPrice(signal.entry)}`, c: "#e2e8f0" },
-      { label: "EXIT", val: `$${formatPrice(signal.closed_price)}`, c: "#93c5fd" },
-      { label: "PROFIT", val: `$${(signal.pnl_usdt || 0).toFixed(2)}`, c: isProfit ? "#4ade80" : "#f87171" },
+      { label: signal.closed_price ? "EXIT" : "LIVE", val: `$${formatPrice(exitPrice)}`, c: "#93c5fd" },
+      { label: "PROFIT", val: `$${livePnlUsdt.toFixed(2)}`, c: isProfit ? "#4ade80" : "#f87171" },
       { label: "MARGIN", val: `$${entryUsdt}`, c: "#fca5a5" },
     ];
 
@@ -230,7 +251,7 @@ export default function PnLPoster({
     ctx.font = "400 10px monospace";
     ctx.textAlign = "center";
     ctx.fillText("agent-x.vercel.app", W / 2, H - 30);
-  }, [signal, leverage, entryUsdt, qrImg, isProfit, pair]);
+  }, [signal, leverage, entryUsdt, qrImg, isProfit, pair, mode, livePnlPct, livePnlUsdt, exitPrice]);
 
   useEffect(() => {
     draw();
