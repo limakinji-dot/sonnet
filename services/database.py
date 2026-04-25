@@ -19,65 +19,88 @@ def get_db():
     finally:
         conn.close()
 
+def _migrate_v2(conn):
+    """Add new columns for TP1/TP2/MAX and sl_trigger_price."""
+    columns_to_add = [
+        ("tp1", "REAL"),
+        ("tp2", "REAL"),
+        ("tp_max", "REAL"),
+        ("sl_trigger_price", "REAL"),
+    ]
+    existing = conn.execute("PRAGMA table_info(signals)").fetchall()
+    existing_cols = {c[1] for c in existing}
+    for col, ctype in columns_to_add:
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {ctype}")
+            print(f"[DB] Migrated: added column {col} {ctype}")
+
 def init_db():
     with get_db() as conn:
-        conn.executescript('''
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                passkey_hash TEXT NOT NULL,
-                is_admin INTEGER DEFAULT 0,
-                leverage INTEGER DEFAULT 10,
-                margin REAL DEFAULT 100,
-                balance REAL DEFAULT 1000,
-                initial_balance REAL DEFAULT 1000,
-                created_at INTEGER
-            );
+        sql = """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            passkey_hash TEXT NOT NULL,
+            is_admin INTEGER DEFAULT 0,
+            leverage INTEGER DEFAULT 10,
+            margin REAL DEFAULT 100,
+            balance REAL DEFAULT 1000,
+            initial_balance REAL DEFAULT 1000,
+            created_at INTEGER
+        );
 
-            CREATE TABLE IF NOT EXISTS signals (
-                id TEXT PRIMARY KEY,
-                user_id TEXT,
-                symbol TEXT,
-                timestamp INTEGER,
-                current_price REAL,
-                trend TEXT,
-                pattern TEXT,
-                decision TEXT,
-                entry REAL,
-                tp REAL,
-                sl REAL,
-                invalidation REAL,
-                reason TEXT,
-                confidence INTEGER,
-                status TEXT,
-                result TEXT,
-                pnl_pct REAL,
-                pnl_usdt REAL,
-                closed_at INTEGER,
-                closed_price REAL,
-                entry_hit INTEGER DEFAULT 0,
-                sl_plus_count INTEGER DEFAULT 0,
-                sl_plus_history TEXT,
-                last_ai_decision TEXT,
-                last_ai_reason TEXT,
-                last_ai_at INTEGER,
-                created_at INTEGER
-            );
+        CREATE TABLE IF NOT EXISTS signals (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            symbol TEXT,
+            timestamp INTEGER,
+            current_price REAL,
+            trend TEXT,
+            pattern TEXT,
+            decision TEXT,
+            entry REAL,
+            tp REAL,
+            tp1 REAL,
+            tp2 REAL,
+            tp_max REAL,
+            sl REAL,
+            sl_trigger_price REAL,
+            invalidation REAL,
+            reason TEXT,
+            confidence INTEGER,
+            status TEXT,
+            result TEXT,
+            pnl_pct REAL,
+            pnl_usdt REAL,
+            closed_at INTEGER,
+            closed_price REAL,
+            entry_hit INTEGER DEFAULT 0,
+            sl_plus_count INTEGER DEFAULT 0,
+            sl_plus_history TEXT,
+            last_ai_decision TEXT,
+            last_ai_reason TEXT,
+            last_ai_at INTEGER,
+            created_at INTEGER
+        );
 
-            CREATE INDEX IF NOT EXISTS idx_signals_user ON signals(user_id);
-            CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
-            CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
-        ''')
+        CREATE INDEX IF NOT EXISTS idx_signals_user ON signals(user_id);
+        CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
+        CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
+        """
+        conn.executescript(sql)
+
+        # Migrate existing tables
+        _migrate_v2(conn)
         conn.commit()
 
 # ── Users ──
 def create_user(user_id: str, username: str, passkey_hash: str, is_admin: int = 0,
                 leverage: int = 10, margin: float = 100, balance: float = 1000):
     with get_db() as conn:
-        conn.execute('''
-            INSERT INTO users (id, username, passkey_hash, is_admin, leverage, margin, balance, initial_balance, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, username.lower(), passkey_hash, is_admin, leverage, margin, balance, balance, int(time.time())))
+        conn.execute("""
+        INSERT INTO users (id, username, passkey_hash, is_admin, leverage, margin, balance, initial_balance, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, username.lower(), passkey_hash, is_admin, leverage, margin, balance, balance, int(time.time())))
         conn.commit()
 
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
@@ -112,10 +135,10 @@ def db_save_signal(signal: Dict[str, Any]):
                 sig[k] = json.dumps(sig[k])
         cols = list(sig.keys())
         placeholders = ', '.join('?' for _ in cols)
-        conn.execute(f'''
-            INSERT OR REPLACE INTO signals ({', '.join(cols)})
-            VALUES ({placeholders})
-        ''', list(sig.values()))
+        conn.execute(f"""
+        INSERT OR REPLACE INTO signals ({', '.join(cols)})
+        VALUES ({placeholders})
+        """, list(sig.values()))
         conn.commit()
 
 def db_get_signals(user_id: Optional[str] = None, limit: int = 500,
