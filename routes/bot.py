@@ -8,12 +8,7 @@ from services.ws_manager import ws_manager
 from services.virtual_exchange import virtual_exchange
 from services.bot_manager import bot_manager
 from services.auth_service import decode_token
-from services.database import (
-    get_user_by_id,
-    db_get_signals,
-    get_user_by_username,
-    db_delete_signals_by_user,
-)
+from services.database import get_user_by_id, db_get_signals, get_user_by_username
 
 router = APIRouter()
 
@@ -148,39 +143,16 @@ async def get_stats(request: Request, user: Optional[str] = Query(None)):
     }
 
 @router.post("/reset")
-async def reset_stats(
-    request: Request,
-    user: Optional[str] = Query(None),
-    user_id: Optional[str] = Depends(_get_user_id),
-):
-    # ── 1. Verifikasi Admin ──
-    token = request.headers.get("authorization", "")
-    is_admin = False
-    if token.startswith("Bearer "):
-        payload = decode_token(token[7:])
-        if payload:
-            is_admin = bool(payload.get("is_admin", False))
-
-    if not is_admin:
-        return {"ok": False, "reason": "Admin only"}
-
-    # ── 2. Resolve target ──
-    target_user = user or user_id or _get_admin_id()
-
-    # ── 3. Reset engine (kalau sedang jalan) ──
-    if target_user:
-        engine = bot_manager.get_engine(target_user)
+async def reset_stats(request: Request, user_id: Optional[str] = Depends(_get_user_id)):
+    if user_id:
+        engine = bot_manager.get_engine(user_id)
         if engine:
             engine.reset_stats()
-        else:
-            # Engine belum pernah start — tetap bersihkan DB & saldo
-            virtual_exchange.reset(target_user)
-            db_delete_signals_by_user(target_user)
+        virtual_exchange.reset(user_id)
     else:
         bot_manager.global_engine.reset_stats()
         virtual_exchange.reset()
 
-    # ── 4. Broadcast ke semua client ──
     await ws_manager.broadcast("reset_all", {
         "trade_count": 0,
         "win_count": 0,
@@ -188,7 +160,7 @@ async def reset_stats(
         "no_trade_count": 0,
         "total_pnl_pct": 0.0,
         "total_pnl_usdt": 0.0,
-        "balance": virtual_exchange.get_info(target_user)["balance"],
+        "balance": virtual_exchange.get_info(user_id)["balance"],
         "signals": [],
         "active_signal_count": 0,
         "timestamp": int(time.time() * 1000),
