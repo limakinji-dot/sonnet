@@ -11,8 +11,7 @@ _rate_limit_store = {}
 # Path yang selalu public (tanpa API Key)
 PUBLIC_PATHS = {"/api/health", "/api/bot/ws"}
 
-# Path read-only yang public (history, bot state, trading balance)
-# Frontend tetap kirim API Key (gak masalah), tapi gak wajib
+# Path read-only GET yang public (history, bot state, balance)
 PUBLIC_GET_PATHS = {
     "/api/history/signals",
     "/api/history/summary",
@@ -30,9 +29,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if path in PUBLIC_PATHS or request.method == "OPTIONS":
             return await call_next(request)
 
-        # ── PUBLIC GET BYPASS: history, bot state, balance (read-only) ──
-        # Kalau GET request ke endpoint public → bypass API Key
-        # Route handler tetap baca Authorization: Bearer untuk mode private
+        # ── PUBLIC GET BYPASS: read-only endpoints ──
         if request.method == "GET" and path in PUBLIC_GET_PATHS:
             return await call_next(request)
 
