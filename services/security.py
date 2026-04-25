@@ -3,14 +3,24 @@ import time
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-from services.database import get_user_by_id
 
 API_KEY = os.getenv("API_KEY", "agent-x-dev-key-change-in-production")
 RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
 _rate_limit_store = {}
 
-# Path yang selalu public (health, ws)
+# Path yang selalu public (tanpa API Key)
 PUBLIC_PATHS = {"/api/health", "/api/bot/ws"}
+
+# Path read-only yang public (history, bot state, trading balance)
+# Frontend tetap kirim API Key (gak masalah), tapi gak wajib
+PUBLIC_GET_PATHS = {
+    "/api/history/signals",
+    "/api/history/summary",
+    "/api/bot/state",
+    "/api/bot/signals",
+    "/api/bot/stats",
+    "/api/trading/balance",
+}
 
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -20,16 +30,13 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if path in PUBLIC_PATHS or request.method == "OPTIONS":
             return await call_next(request)
 
-        # ── HISTORY BYPASS: kalau ada ?user= param yang valid ──
-        if path.startswith("/api/history/"):
-            user_param = request.query_params.get("user")
-            if user_param:
-                user = get_user_by_id(user_param)
-                if user:
-                    # Valid user → allow through, route akan handle global/private
-                    return await call_next(request)
+        # ── PUBLIC GET BYPASS: history, bot state, balance (read-only) ──
+        # Kalau GET request ke endpoint public → bypass API Key
+        # Route handler tetap baca Authorization: Bearer untuk mode private
+        if request.method == "GET" and path in PUBLIC_GET_PATHS:
+            return await call_next(request)
 
-        # ── Standard API Key check ──
+        # ── Standard API Key check untuk endpoint lain ──
         client_ip = request.client.host if request.client else "unknown"
         api_key = request.headers.get("x-api-key")
 
