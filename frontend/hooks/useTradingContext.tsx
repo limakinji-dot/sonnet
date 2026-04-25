@@ -61,11 +61,31 @@ function reducer(state: BotState, action: Action): BotState {
       return { ...state, signals: next };
     }
     case "CLOSE_SIGNAL": {
-      const filtered = state.signals.filter((s) => s.id !== action.payload.id);
+      const existing = state.signals.find((s) => s.id === action.payload.id);
+      const alreadyCounted = existing?.status === "CLOSED";
+
+      let nextSignals;
+      if (existing) {
+        nextSignals = state.signals.map((s) =>
+          s.id === action.payload.id
+            ? ({ ...s, ...action.payload, status: "CLOSED" as const } as Signal)
+            : s
+        );
+      } else {
+        nextSignals = [
+          { ...action.payload, status: "CLOSED" as const } as Signal,
+          ...state.signals,
+        ].slice(0, 500);
+      }
+
+      if (alreadyCounted) {
+        return { ...state, signals: nextSignals };
+      }
+
       const pnl = action.payload.pnl_pct || 0;
       return {
         ...state,
-        signals: filtered,
+        signals: nextSignals,
         trade_count: state.trade_count + 1,
         win_count: pnl >= 0 ? state.win_count + 1 : state.win_count,
         loss_count: pnl < 0 ? state.loss_count + 1 : state.loss_count,
@@ -89,7 +109,6 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
   const [balance, setBalance] = React.useState<BalanceInfo>(initialBalance);
   const [latestTheme, setLatestTheme] = React.useState<"profit" | "loss" | "neutral">("neutral");
 
-  // Override balance & leverage dari user data kalau login
   useEffect(() => {
     if (isAuthenticated && userData) {
       setBalance({
@@ -103,9 +122,7 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthenticated, userData]);
 
-  // WebSocket connection — connect ke backend langsung
   useEffect(() => {
-    // WebSocket HARUS connect ke backend langsung (tidak bisa lewat Next.js rewrite)
     const wsHost = "web-production-e78a1.up.railway.app";
     const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${wsHost}/api/bot/ws`;
@@ -117,7 +134,6 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        // Kirim auth info via WS kalau authenticated
         if (isAuthenticated && userId) {
           ws?.send(JSON.stringify({ type: "auth", user_id: userId }));
         }
@@ -187,7 +203,6 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     };
   }, [isAuthenticated, userId]);
 
-  // Initial REST fetch — tambah user_id kalau login
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -203,11 +218,10 @@ export function TradingProvider({ children }: { children: React.ReactNode }) {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000); // refresh tiap 30s
+    const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, [isAuthenticated, userId]);
 
-  // Update DOM theme attribute for global CSS variables
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", latestTheme);
   }, [latestTheme]);
