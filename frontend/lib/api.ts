@@ -1,4 +1,16 @@
-import { API_BASE, API_KEY, getTimestamp } from "./config";
+const API_BASE =
+  typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE
+    ? process.env.NEXT_PUBLIC_API_BASE
+    : "";
+
+const API_KEY =
+  typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_KEY
+    ? process.env.NEXT_PUBLIC_API_KEY
+    : "";
+
+function getTimestamp(): string {
+  return String(Date.now());
+}
 
 export async function apiFetch(
   path: string,
