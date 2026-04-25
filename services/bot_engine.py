@@ -162,7 +162,7 @@ class BotEngine:
 
         return {"ok": True}
 
-     async def stop(self):
+    async def stop(self):
         self.running = False
         if self._task:
             self._task.cancel()
