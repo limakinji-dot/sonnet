@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/useAuthContext";
 import { useTrading } from "@/hooks/useTradingContext";
-import { register, getBotState, startBot, stopBot } from "@/lib/api";
+import { register, getBotState, startBot, stopBot, resetBot } from "@/lib/api";
 import SignalFeed from "@/components/ui/SignalFeed";
 import TradeHistoryTable from "@/components/ui/TradeHistoryTable";
 import WinRateChart from "@/components/dashboard/WinRateChart";
@@ -31,6 +31,7 @@ export default function DashboardPage() {
   // ── Bot State ──
   const [botRunning, setBotRunning] = useState(false);
   const [botLoading, setBotLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
 
   // Protect route
   useEffect(() => {
@@ -129,6 +130,27 @@ export default function DashboardPage() {
     }
   };
 
+  // ── Handler: Reset All (Admin Only) ──
+  const handleReset = async () => {
+    if (!confirm("⚠️ RESET ALL?\n\nThis will:\n• Clear all signals & history\n• Reset balance to initial\n• Reset all stats to 0\n\nThis action cannot be undone!")) {
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const res = await resetBot();
+      if (res.ok) {
+        alert("✅ Reset successful! Refreshing...");
+        window.location.reload();
+      } else {
+        alert(`❌ Reset failed: ${res.reason || "Unknown error"}`);
+      }
+    } catch (e: any) {
+      alert(`❌ Reset error: ${e.message}`);
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   const fmtBalance = (n: number) =>
     n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
@@ -167,20 +189,29 @@ export default function DashboardPage() {
               {isAdmin && <span className="ml-2 text-[#d4a847]">[ADMIN]</span>}
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            {/* Bot Start/Stop Button */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Admin Controls */}
             {isAdmin && (
-              <button
-                onClick={botRunning ? handleStopBot : handleStartBot}
-                disabled={botLoading}
-                className={`px-4 py-2.5 rounded-lg text-[10px] font-mono font-bold tracking-wider transition-colors border ${
-                  botRunning
-                    ? "bg-[#f87171]/10 border-[#f87171]/30 text-[#f87171] hover:bg-[#f87171]/20"
-                    : "bg-[#4ade80]/10 border-[#4ade80]/30 text-[#4ade80] hover:bg-[#4ade80]/20"
-                } disabled:opacity-50`}
-              >
-                {botLoading ? "..." : botRunning ? "STOP BOT" : "START BOT"}
-              </button>
+              <>
+                <button
+                  onClick={botRunning ? handleStopBot : handleStartBot}
+                  disabled={botLoading}
+                  className={`px-4 py-2.5 rounded-lg text-[10px] font-mono font-bold tracking-wider transition-colors border ${
+                    botRunning
+                      ? "bg-[#f87171]/10 border-[#f87171]/30 text-[#f87171] hover:bg-[#f87171]/20"
+                      : "bg-[#4ade80]/10 border-[#4ade80]/30 text-[#4ade80] hover:bg-[#4ade80]/20"
+                  } disabled:opacity-50`}
+                >
+                  {botLoading ? "..." : botRunning ? "STOP BOT" : "START BOT"}
+                </button>
+                <button
+                  onClick={handleReset}
+                  disabled={resetLoading}
+                  className="px-4 py-2.5 rounded-lg bg-[#f87171]/10 border border-[#f87171]/30 text-[#f87171] text-[10px] font-mono font-bold tracking-wider hover:bg-[#f87171]/20 transition-colors disabled:opacity-50"
+                >
+                  {resetLoading ? "RESETTING..." : "RESET ALL"}
+                </button>
+              </>
             )}
             <button
               onClick={logout}
