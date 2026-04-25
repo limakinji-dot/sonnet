@@ -1,8 +1,8 @@
-"use client";
+l"use client";
 
 import React, { createContext, useContext, useReducer, useEffect, useCallback } from "react";
 import { useAuth } from "./useAuthContext";
-import { getBotState, getBalance, getSignalHistory, getHistorySummary } from "@/lib/api";
+import { getBotState, getBalance } from "@/lib/api";
 import type { Signal, BotState, BalanceInfo, WSEvent } from "@/lib/types";
 
 interface TradingContextType {
