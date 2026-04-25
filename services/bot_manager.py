@@ -1,4 +1,4 @@
-
+# bot_manager.py
 import asyncio
 from typing import Dict, Optional
 from services.bot_engine import BotEngine
@@ -10,12 +10,18 @@ class BotManager:
         self._running_state: Dict[str, bool] = {}
 
     async def start_user_bot(self, user_id: str, config: dict):
-        # Stop engine lama kalau ada
+        # Stop & cleanup engine lama kalau ada
         if user_id in self.user_engines:
             old = self.user_engines[user_id]
             if old.running:
                 return {"ok": False, "reason": "Bot already running for this user"}
             await old.shutdown()
+            # ← FIX: tunggu sampai task benar-benar mati
+            if old._task:
+                try:
+                    await asyncio.wait_for(old._task, timeout=5)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
             del self.user_engines[user_id]
 
         engine = BotEngine(user_id=user_id)
