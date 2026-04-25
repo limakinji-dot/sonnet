@@ -162,12 +162,22 @@ class BotEngine:
 
         return {"ok": True}
 
-    async def stop(self):
+     async def stop(self):
         self.running = False
         if self._task:
             self._task.cancel()
+            try:
+                await self._task  # ← tunggu sampai task selesai cancel
+            except asyncio.CancelledError:
+                pass
+            self._task = None  # ← FIX: bersihkan reference
         if self._ka_task:
             self._ka_task.cancel()
+            try:
+                await self._ka_task
+            except asyncio.CancelledError:
+                pass
+            self._ka_task = None
         self.state["status"] = "IDLE"
         return {"ok": True}
 
