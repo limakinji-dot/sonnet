@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useTrading } from "@/hooks/useTradingContext";
 import { motion, AnimatePresence } from "framer-motion";
+import { getTradeHistory } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuthContext";
+import PosterButton from "@/components/ui/SignalPoster";
 
 interface TradeHistoryTableProps {
   limit?: number;
@@ -18,19 +21,49 @@ function formatPrice(n: number | undefined) {
 }
 
 export default function TradeHistoryTable({ limit = 20, compact = false }: TradeHistoryTableProps) {
-  const { state } = useTrading();
-  const [history, setHistory] = useState<any[]>([]);
+  const { state, balance } = useTrading();
+  const { userId, isAuthenticated } = useAuth();
+  const [apiHistory, setApiHistory] = useState<any[]>([]);
 
+  // Fetch persistent history from API (survive refresh)
   useEffect(() => {
-    const closed = (state.signals || [])
-      .filter((s: any) => s.result === "TP" || s.result === "SL")
+    let mounted = true;
+    getTradeHistory(100, isAuthenticated ? userId || undefined : undefined)
+      .then((res) => {
+        if (!mounted) return;
+        setApiHistory(res.data || []);
+      })
+      .catch(() => {});
+    return () => { mounted = false; };
+  }, [isAuthenticated, userId]);
+
+  // Kalau reset terjadi, clear cache & refetch
+  useEffect(() => {
+    if (state.trade_count === 0 && state.win_count === 0 && state.loss_count === 0) {
+      setApiHistory([]);
+      getTradeHistory(100, isAuthenticated ? userId || undefined : undefined)
+        .then((res) => setApiHistory(res.data || []))
+        .catch(() => {});
+    }
+  }, [state.trade_count, state.win_count, state.loss_count, isAuthenticated, userId]);
+
+  // Merge API history dengan real-time WS updates
+  const history = useMemo(() => {
+    const map = new Map<string, any>();
+    apiHistory.forEach((s) => map.set(s.id, s));
+    state.signals.forEach((s) => {
+      if (s.result === "TP" || s.result === "SL" || s.status === "CLOSED") {
+        map.set(s.id, s);
+      }
+    });
+    return Array.from(map.values())
+      .sort((a, b) => (b.closed_at || b.timestamp || 0) - (a.closed_at || a.timestamp || 0))
       .slice(0, limit);
-    setHistory(closed);
-  }, [state.signals, limit]);
+  }, [apiHistory, state.signals, limit]);
 
   const headers = compact
-    ? ["PAIR", "DIR", "ENTRY", "CLOSE", "PnL %"]
-    : ["PAIR", "DIR", "ENTRY", "TP1", "TP2", "MAX", "CLOSE", "PnL %"];
+    ? ["PAIR", "DIR", "ENTRY", "CLOSE", "PnL %", ""]
+    : ["PAIR", "DIR", "ENTRY", "TP1", "TP2", "MAX", "CLOSE", "PnL %", ""];
 
   return (
     <div className="overflow-x-auto -mx-2 px-2">
@@ -99,6 +132,14 @@ export default function TradeHistoryTable({ limit = 20, compact = false }: Trade
                 >
                   {(sig.pnl_pct || 0) >= 0 ? "+" : ""}
                   {sig.pnl_pct?.toFixed(2)}%
+                </td>
+                <td className="py-2.5 px-2">
+                  <PosterButton
+                    signal={sig}
+                    leverage={balance.leverage}
+                    entryUsdt={balance.entry_usdt}
+                    allowForClosed={true}
+                  />
                 </td>
               </motion.tr>
             ))}
