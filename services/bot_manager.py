@@ -8,36 +8,50 @@ class BotManager:
         self.global_engine = BotEngine(user_id=None)
         self.user_engines: Dict[str, BotEngine] = {}
         self._running_state: Dict[str, bool] = {}
+        self._shutdown_locks: Dict[str, asyncio.Lock] = {}  # ← lock per user
+
+    def _get_lock(self, user_id: str) -> asyncio.Lock:
+        if user_id not in self._shutdown_locks:
+            self._shutdown_locks[user_id] = asyncio.Lock()
+        return self._shutdown_locks[user_id]
 
     async def start_user_bot(self, user_id: str, config: dict):
-        # Stop & cleanup engine lama kalau ada
-        if user_id in self.user_engines:
-            old = self.user_engines[user_id]
-            if old.running:
-                return {"ok": False, "reason": "Bot already running for this user"}
-            await old.shutdown()
-            # ← FIX: tunggu sampai task benar-benar mati
-            if old._task:
-                try:
-                    await asyncio.wait_for(old._task, timeout=5)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-            del self.user_engines[user_id]
+        async with self._get_lock(user_id):  # ← tunggu kalau ada shutdown berjalan
+            # Stop & cleanup engine lama kalau ada
+            if user_id in self.user_engines:
+                old = self.user_engines[user_id]
+                if old.running:
+                    return {"ok": False, "reason": "Bot already running for this user"}
+                # ← FIX: shutdown bersih + tunggu task mati
+                await old.shutdown()
+                if old._task:
+                    try:
+                        await asyncio.wait_for(old._task, timeout=10)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+                del self.user_engines[user_id]
 
-        engine = BotEngine(user_id=user_id)
-        self.user_engines[user_id] = engine
-        self._running_state[user_id] = True
-        result = await engine.start(config)
-        return result
+            engine = BotEngine(user_id=user_id)
+            self.user_engines[user_id] = engine
+            self._running_state[user_id] = True
+            result = await engine.start(config)
+            return result
 
     async def stop_user_bot(self, user_id: str):
-        engine = self.user_engines.get(user_id)
-        if engine and engine.running:
-            result = await engine.stop()
+        async with self._get_lock(user_id):  # ← block start sampai shutdown selesai
+            engine = self.user_engines.get(user_id)
+            if engine and engine.running:
+                result = await engine.stop()
+                # ← FIX: tunggu task benar-benar mati sebelum return
+                if engine._task:
+                    try:
+                        await asyncio.wait_for(engine._task, timeout=10)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+                self._running_state[user_id] = False
+                return result
             self._running_state[user_id] = False
-            return result
-        self._running_state[user_id] = False
-        return {"ok": False, "reason": "No bot running for this user"}
+            return {"ok": False, "reason": "No bot running for this user"}
 
     def get_engine(self, user_id: Optional[str] = None):
         if user_id:
@@ -58,5 +72,6 @@ class BotManager:
             await engine.shutdown()
         self.user_engines.clear()
         self._running_state.clear()
+        self._shutdown_locks.clear()
 
 bot_manager = BotManager()
