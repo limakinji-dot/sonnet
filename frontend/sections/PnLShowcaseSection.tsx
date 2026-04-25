@@ -6,7 +6,7 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
 import { useTrading } from "@/hooks/useTradingContext";
-import PnLPoster from "@/components/ui/PnLPoster";
+import PnLPoster from "@/components/ui/SignalPoster";
 import GlassCard from "@/components/ui/GlassCard";
 
 gsap.registerPlugin(ScrollTrigger);
