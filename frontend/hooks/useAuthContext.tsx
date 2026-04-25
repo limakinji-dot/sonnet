@@ -78,7 +78,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // Coba restore dari localStorage dulu buat instant UI
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("agent-x-user");
       const token = getToken();
@@ -95,20 +94,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
     }
-    // Lalu fetch fresh dari server
     refreshUser();
   }, [refreshUser]);
 
   const login = useCallback(
     async (username: string, passkey: string) => {
       try {
-        const data = await apiLogin({ username, passkey });  // ← FIX DI SINI
+        const data = await apiLogin({ username, passkey });
         if (data.success) {
+          setToken(data.token);                    // ← FIX: simpan token
           setIsAuthenticated(true);
           setUsername(data.user.username);
           setUserId(data.user.id);
           setUserData(data.user);
           setIsAdmin(data.user.is_admin);
+          if (typeof window !== "undefined") {
+            localStorage.setItem("agent-x-user", JSON.stringify(data.user));
+          }
           return { success: true };
         }
         return { success: false, error: data.detail || "Login failed" };
