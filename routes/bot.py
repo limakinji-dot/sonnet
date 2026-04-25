@@ -12,7 +12,6 @@ from services.database import get_user_by_id, db_get_signals, get_user_by_userna
 
 router = APIRouter()
 
-# ── Helper: Ambil Admin ID ──
 _admin_user_id = None
 
 def _get_admin_id() -> Optional[str]:
@@ -78,10 +77,25 @@ async def get_state(request: Request, user: Optional[str] = Query(None)):
     user_id = _resolve_user_id(request, user)
     engine = bot_manager.get_engine(user_id)
 
+    lock = bot_manager._shutdown_locks.get(user_id or "")
+    if lock and lock.locked():
+        return {
+            "status": "STOPPING",
+            "running": False,
+            "transitioning": True,
+            "trade_count": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "winrate": 0,
+            "total_pnl_pct": 0.0,
+            "total_pnl_usdt": 0.0,
+            "active_signal_count": 0,
+            "max_active_signals": int(os.getenv("MAX_ACTIVE_SIGNALS", "20")),
+        }
+
     if engine:
         return engine.get_state()
 
-    # Fallback: cek persist state
     is_running = bot_manager.is_running(user_id)
     return {
         "status": "RUNNING" if is_running else "IDLE",
@@ -149,7 +163,6 @@ async def reset_stats(request: Request, user_id: Optional[str] = Depends(_get_us
         if engine:
             engine.reset_stats()
         else:
-            # ← FIX: engine belum pernah dibuat — hapus signals & reset balance manual
             db_delete_signals_by_user(user_id)
             virtual_exchange.reset(user_id)
     else:
