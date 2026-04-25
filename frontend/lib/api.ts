@@ -1,4 +1,10 @@
-import { API_BASE, API_KEY, getTimestamp } from "./config";
+// api.ts — inline config (no external config file needed)
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
+
+function getTimestamp() {
+  return Date.now().toString();
+}
 
 export async function apiFetch(
   path: string,
@@ -58,6 +64,11 @@ export async function startBot(
 export async function stopBot(userId?: string) {
   const qs = userId ? `?user=${userId}` : "";
   return apiFetch(`/api/bot/stop${qs}`, { method: "POST" });
+}
+
+export async function resetBot(userId?: string) {
+  const qs = userId ? `?user=${userId}` : "";
+  return apiFetch(`/api/bot/reset${qs}`, { method: "POST" });
 }
 
 export async function getBotSignals(limit: number = 50, userId?: string) {
