@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/useAuthContext";
 import { useTrading } from "@/hooks/useTradingContext";
-import { register, getBotState, startBot, stopBot, resetBot } from "@/lib/api";
+import { register, getBotState, startBot, stopBot } from "@/lib/api";
 import SignalFeed from "@/components/ui/SignalFeed";
 import TradeHistoryTable from "@/components/ui/TradeHistoryTable";
 import WinRateChart from "@/components/dashboard/WinRateChart";
@@ -31,10 +31,6 @@ export default function DashboardPage() {
   // ── Bot State ──
   const [botRunning, setBotRunning] = useState(false);
   const [botLoading, setBotLoading] = useState(false);
-
-  // ── Reset State ──
-  const [resetLoading, setResetLoading] = useState(false);
-  const [resetMsg, setResetMsg] = useState<string | null>(null);
 
   // Protect route
   useEffect(() => {
@@ -130,30 +126,6 @@ export default function DashboardPage() {
       if (res.ok) setBotRunning(false);
     } finally {
       setBotLoading(false);
-    }
-  };
-
-  // ── Handler: Reset All ──
-  const handleReset = async () => {
-    const ok = confirm(
-      "Yakin reset semua?\n\n• History signal akan dihapus\n• Live signal di-clear\n• Saldo kembali ke nilai awal"
-    );
-    if (!ok) return;
-
-    setResetLoading(true);
-    setResetMsg(null);
-    try {
-      const res = await resetBot();
-      if (res.ok) {
-        setResetMsg("✅ Reset berhasil! Reload halaman...");
-        setTimeout(() => window.location.reload(), 1200);
-      } else {
-        setResetMsg(`❌ ${res.reason || "Gagal reset"}`);
-      }
-    } catch (e: any) {
-      setResetMsg(`❌ ${e.message}`);
-    } finally {
-      setResetLoading(false);
     }
   };
 
@@ -364,7 +336,7 @@ export default function DashboardPage() {
             </motion.div>
           </div>
 
-          {/* Right: WR Chart + Settings + Admin Reset */}
+          {/* Right: WR Chart + Settings */}
           <div className="space-y-4 sm:space-y-6">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -390,26 +362,6 @@ export default function DashboardPage() {
               </h3>
               <SettingsPanel />
             </motion.div>
-
-            {/* Admin Reset — langsung di sini */}
-            {isAdmin && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.4 }}
-                className="p-4 rounded-xl border border-red-500/30 bg-red-500/5"
-              >
-                <h3 className="text-sm font-semibold text-red-300 mb-3">Admin Control</h3>
-                <button
-                  onClick={handleReset}
-                  disabled={resetLoading}
-                  className="w-full py-2.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-                >
-                  {resetLoading ? "Resetting..." : "🔄 Reset All (History + Signal + Balance)"}
-                </button>
-                {resetMsg && <p className="mt-2 text-xs text-white/80">{resetMsg}</p>}
-              </motion.div>
-            )}
           </div>
         </div>
       </div>
