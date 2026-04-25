@@ -29,6 +29,24 @@ export async function apiFetch(
   return res.json();
 }
 
+// ── Token helpers (localStorage) ──
+const TOKEN_KEY = "agentx_token";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function removeToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(TOKEN_KEY);
+}
+
 // ── Auth ──
 export async function register(body: { username: string; passkey: string }) {
   return apiFetch("/api/auth/register", {
@@ -41,6 +59,15 @@ export async function login(body: { username: string; passkey: string }) {
   return apiFetch("/api/auth/login", {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+export async function getMe() {
+  const token = getToken();
+  return apiFetch("/api/auth/me", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
   });
 }
 
