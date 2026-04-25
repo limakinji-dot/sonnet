@@ -102,7 +102,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(
     async (username: string, passkey: string) => {
       try {
-        const data = await apiLogin(username, passkey);
+        const data = await apiLogin({ username, passkey });  // ← FIX DI SINI
         if (data.success) {
           setIsAuthenticated(true);
           setUsername(data.user.username);
