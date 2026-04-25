@@ -10,6 +10,7 @@ import SignalFeed from "@/components/ui/SignalFeed";
 import TradeHistoryTable from "@/components/ui/TradeHistoryTable";
 import WinRateChart from "@/components/dashboard/WinRateChart";
 import SettingsPanel from "@/components/dashboard/SettingsPanel";
+import AdminResetButton from "@/components/dashboard/AdminResetButton";
 import Link from "next/link";
 
 export default function DashboardPage() {
@@ -336,7 +337,7 @@ export default function DashboardPage() {
             </motion.div>
           </div>
 
-          {/* Right: WR Chart + Settings */}
+          {/* Right: WR Chart + Settings + Admin Reset */}
           <div className="space-y-4 sm:space-y-6">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -361,6 +362,15 @@ export default function DashboardPage() {
                 Bot Settings
               </h3>
               <SettingsPanel />
+            </motion.div>
+
+            {/* Admin Reset Button */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.4 }}
+            >
+              <AdminResetButton />
             </motion.div>
           </div>
         </div>
