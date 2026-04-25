@@ -8,7 +8,7 @@ from services.ws_manager import ws_manager
 from services.virtual_exchange import virtual_exchange
 from services.bot_manager import bot_manager
 from services.auth_service import decode_token
-from services.database import get_user_by_id, db_get_signals, get_user_by_username
+from services.database import get_user_by_id, db_get_signals, get_user_by_username, db_delete_signals_by_user
 
 router = APIRouter()
 
@@ -148,7 +148,10 @@ async def reset_stats(request: Request, user_id: Optional[str] = Depends(_get_us
         engine = bot_manager.get_engine(user_id)
         if engine:
             engine.reset_stats()
-        virtual_exchange.reset(user_id)
+        else:
+            # ← FIX: engine belum pernah dibuat — hapus signals & reset balance manual
+            db_delete_signals_by_user(user_id)
+            virtual_exchange.reset(user_id)
     else:
         bot_manager.global_engine.reset_stats()
         virtual_exchange.reset()
