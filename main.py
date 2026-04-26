@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from routes import trading, bot, market, history, auth_routes
+from routes import trading, bot, market, history, auth_routes, admin_routes
 from services.bot_manager import bot_manager
 from services.database import init_db
 from services.auth_service import seed_admin
@@ -42,6 +42,7 @@ app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
 app.include_router(bot.router,     prefix="/api/bot",     tags=["bot"])
 app.include_router(market.router,  prefix="/api/market",  tags=["market"])
 app.include_router(history.router, prefix="/api/history", tags=["history"])
+app.include_router(admin_routes.router, prefix="/api/admin", tags=["admin"])
 
 @app.websocket("/api/bot/ws")
 async def websocket_endpoint(ws: WebSocket):
