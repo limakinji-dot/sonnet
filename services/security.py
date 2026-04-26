@@ -28,11 +28,14 @@ PUBLIC_GET_PATHS = {
 }
 
 # Prefix public untuk dynamic segments, e.g. /api/market/ticker/BTC_USDT
+# /api/admin/ didaftarkan di sini karena auth-nya di-handle oleh JWT require_admin
+# di dalam route — bukan X-API-Key.
 PUBLIC_GET_PREFIXES = (
     "/api/market/ticker/",
     "/api/market/candles/",
     "/api/history/signals/",
     "/api/history/summary/",
+    "/api/admin/",
 )
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -41,6 +44,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
         # Selalu bypass: health, ws, options
         if path in PUBLIC_PATHS or request.method == "OPTIONS":
+            return await call_next(request)
+
+        # Admin routes — auth di-handle oleh JWT require_admin di dalam route
+        if path.startswith("/api/admin/") or path == "/api/admin":
             return await call_next(request)
 
         # Public GET: exact path atau prefix match
