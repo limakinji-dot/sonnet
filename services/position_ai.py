@@ -154,6 +154,7 @@ class PositionAIClient:
     def __init__(self, token: str):
         self.token = token
         self.client = httpx.AsyncClient(timeout=180)
+        self.exhausted = False  # True kalau kena rate limit harian
 
     async def _refresh(self) -> bool:
         try:
@@ -363,7 +364,25 @@ class PositionAIClient:
                             continue
                         return None
                     if resp.status_code == 429:
-                        logger.warning("[PositionAI] 429 rate-limited")
+                        self.exhausted = True
+                        print(f"[PositionAI] 🚫 Token rate-limited (429) — marked exhausted")
+                        return None
+                    if resp.status_code == 502:
+                        try:
+                            err = resp.json().get("error", {})
+                            code = err.get("code", "")
+                            detail = err.get("details", "") or err.get("message", "")
+                        except Exception:
+                            code, detail = "", ""
+                        if code == "RateLimited" or "upper limit" in detail.lower() or "usage" in detail.lower():
+                            self.exhausted = True
+                            print(f"[PositionAI] 🚫 Daily limit reached — marked exhausted")
+                            return None
+                        if code == "image_upload_failed":
+                            print(f"[PositionAI] ⚠️ Image upload failed for {symbol} — retrying text-only")
+                            use_charts = False
+                            continue
+                        logger.error(f"[PositionAI] HTTP 502: {resp.text[:200]}")
                         return None
                     if resp.status_code != 200:
                         logger.error(f"[PositionAI] HTTP {resp.status_code}: {resp.text[:200]}")
@@ -472,6 +491,10 @@ class PositionMonitorAI:
             return {"decision": "HOLD", "reason": "No token configured"}
 
         for attempt in range(max_retries):
+            if self._client.exhausted:
+                print(f"[PositionAI] Token exhausted — HOLD {symbol} sampai token direset")
+                return {"decision": "HOLD", "reason": "Token daily limit reached — holding position"}
+
             result = await self._client.decide(
                 symbol=symbol,
                 direction=direction,
@@ -497,6 +520,12 @@ class PositionMonitorAI:
             await asyncio.sleep(wait)
 
         return {"decision": "HOLD", "reason": "Retries exhausted"}
+
+    def reset_exhausted(self):
+        """Reset exhausted flag — dipanggil saat token di-update via admin route."""
+        if self._client:
+            self._client.exhausted = False
+            print("[PositionAI] Exhausted flag reset")
 
     async def close(self):
         if self._client:
