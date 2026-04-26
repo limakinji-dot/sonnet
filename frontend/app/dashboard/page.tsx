@@ -13,7 +13,7 @@ import SettingsPanel from "@/components/dashboard/SettingsPanel";
 import Link from "next/link";
 
 export default function DashboardPage() {
-  const { isAuthenticated, username, isAdmin, logout, token } = useAuth();
+  const { isAuthenticated, username, isAdmin, logout } = useAuth();
   const { state, balance } = useTrading();
   const router = useRouter();
 
@@ -78,20 +78,13 @@ export default function DashboardPage() {
     setTokenLoading(true);
     setTokenMsg(null);
     try {
-      const authToken = token || localStorage.getItem("auth_token") || localStorage.getItem("token") || "";
-      const res = await fetch("/api/admin/tokens", {
+      const data = await apiFetch("/api/admin/tokens", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${authToken}`,
-        },
         body: JSON.stringify({ tokens }),
       });
-      const data = await res.json();
-      if (data.ok) setTokenMsg(`✅ ${data.message}`);
-      else setTokenMsg(`❌ ${data.detail || "Gagal update token"}`);
+      setTokenMsg(`✅ ${data.message}`);
     } catch (e: any) {
-      setTokenMsg(`❌ ${e.message}`);
+      setTokenMsg(`❌ ${e.message || "Gagal update token"}`);
     } finally {
       setTokenLoading(false);
     }
