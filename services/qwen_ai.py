@@ -278,6 +278,7 @@ class QwenAIClient:
         self.token = token
         self.slot = slot
         self._tag = f"[QW-{slot}]"
+        self.exhausted = False  # True kalau kena rate limit harian
         self.client = httpx.AsyncClient(timeout=240)
 
     async def _refresh(self) -> bool:
@@ -441,18 +442,26 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
 
                     if resp.status_code == 429:
                         logger.warning(f"{tag} 429 Rate-limited for {symbol}")
-                        return self._no_trade("Rate limited (429) — try again later")
+                        self.exhausted = True
+                        print(f"{tag} 🚫 Token slot {self.slot} rate-limited (429) — marked exhausted")
+                        return self._no_trade("RateLimited:429")
 
                     if resp.status_code == 502:
                         try:
-                            err_code = resp.json().get("error", {}).get("code", "")
+                            err = resp.json().get("error", {})
+                            code = err.get("code", "")
+                            detail = err.get("details", "") or err.get("message", "")
                         except Exception:
-                            err_code = ""
-                        if err_code == "image_upload_failed":
-                            print(f"{tag} ⚠️ Image upload failed for {symbol} — skipping (NO TRADE)")
-                        else:
-                            logger.error(f"{tag} HTTP 502 for {symbol}: {resp.text[:400]}")
-                        return self._no_trade(f"HTTP 502: {err_code or 'gateway error'}")
+                            code, detail = "", ""
+                        if code == "RateLimited" or "upper limit" in detail.lower() or "usage" in detail.lower():
+                            self.exhausted = True
+                            print(f"{tag} 🚫 Token slot {self.slot} daily limit reached — marked exhausted")
+                            return self._no_trade("RateLimited:daily")
+                        if code == "image_upload_failed":
+                            print(f"{tag} ⚠️ Image upload failed for {symbol} — NO TRADE")
+                            return self._no_trade("HTTP 502: image_upload_failed")
+                        logger.error(f"{tag} HTTP 502 for {symbol}: {resp.text[:400]}")
+                        return self._no_trade("HTTP 502: gateway error")
 
                     if resp.status_code != 200:
                         logger.error(f"{tag} HTTP {resp.status_code} for {symbol}: {resp.text[:400]}")
@@ -576,23 +585,47 @@ class ParallelQwenAI:
                 f"charts={'ON' if HAS_CHARTS else 'OFF (install matplotlib)'}"
             )
 
+    def _available_clients(self) -> list:
+        """Return clients yang belum exhausted. Kalau semua exhausted, return semua (reset)."""
+        available = [c for c in self.clients if not c.exhausted]
+        if not available:
+            # Semua exhausted — reset dan coba lagi (mungkin sudah lewat tengah malam)
+            print("[ParallelQwen] All tokens exhausted — resetting exhausted flags (retry)")
+            for c in self.clients:
+                c.exhausted = False
+            available = self.clients
+        return available
+
     async def analyze_batch(self, items: list) -> list:
         if not self.clients:
             return [self._no_trade("No tokens configured")] * len(items)
 
+        available = self._available_clients()
         tasks = []
         for i, item in enumerate(items):
             sym = item[0]
             tfs = item[1]
             price = item[2] if len(item) > 2 else None
-            client = self.clients[i % len(self.clients)]
+            client = available[i % len(available)]
             tasks.append(asyncio.create_task(client.analyze(sym, tfs, price)))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        return [
-            r if isinstance(r, dict) else self._no_trade(f"Task exception: {r}")
-            for r in results
-        ]
+        # Kalau token exhausted saat batch jalan, retry item itu dengan token lain
+        final = []
+        for i, r in enumerate(results):
+            if isinstance(r, dict) and "RateLimited" in r.get("reason", ""):
+                available2 = self._available_clients()
+                if available2:
+                    sym, tfs, *rest = items[i]
+                    price = rest[0] if rest else None
+                    client2 = available2[i % len(available2)]
+                    print(f"[ParallelQwen] Retrying {sym} with token slot {client2.slot}")
+                    try:
+                        r = await client2.analyze(sym, tfs, price)
+                    except Exception as e:
+                        r = self._no_trade(f"Retry failed: {e}")
+            final.append(r if isinstance(r, dict) else self._no_trade(f"Task exception: {r}"))
+        return final
 
     async def analyze(
         self,
@@ -602,9 +635,19 @@ class ParallelQwenAI:
     ) -> dict:
         if not self.clients:
             return self._no_trade("No tokens configured")
-        client = self.clients[self._rr_idx % len(self.clients)]
+        available = self._available_clients()
+        client = available[self._rr_idx % len(available)]
         self._rr_idx += 1
-        return await client.analyze(symbol, candles_by_tf, current_price)
+        result = await client.analyze(symbol, candles_by_tf, current_price)
+        # Kalau exhausted, coba token lain sekali
+        if "RateLimited" in result.get("reason", ""):
+            available2 = self._available_clients()
+            if available2:
+                client2 = available2[self._rr_idx % len(available2)]
+                self._rr_idx += 1
+                print(f"[ParallelQwen] Retrying {symbol} with token slot {client2.slot}")
+                result = await client2.analyze(symbol, candles_by_tf, current_price)
+        return result
 
     def _no_trade(self, reason: str) -> dict:
         return {
