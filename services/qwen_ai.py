@@ -443,6 +443,17 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                         logger.warning(f"{tag} 429 Rate-limited for {symbol}")
                         return self._no_trade("Rate limited (429) — try again later")
 
+                    if resp.status_code == 502:
+                        try:
+                            err_code = resp.json().get("error", {}).get("code", "")
+                        except Exception:
+                            err_code = ""
+                        if err_code == "image_upload_failed":
+                            print(f"{tag} ⚠️ Image upload failed for {symbol} — skipping (NO TRADE)")
+                        else:
+                            logger.error(f"{tag} HTTP 502 for {symbol}: {resp.text[:400]}")
+                        return self._no_trade(f"HTTP 502: {err_code or 'gateway error'}")
+
                     if resp.status_code != 200:
                         logger.error(f"{tag} HTTP {resp.status_code} for {symbol}: {resp.text[:400]}")
                         return self._no_trade(f"HTTP {resp.status_code}")
