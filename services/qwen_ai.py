@@ -624,35 +624,73 @@ class ParallelQwenAI:
             available = self.clients
         return available
 
+    # ── Error reasons yang memicu rotate token ──────────────────────────────
+    # Token hanya diganti kalau terjadi error ini. Error lain (timeout, JSON
+    # parse, dll) TIDAK merotate — tetap pakai token yang sama.
+    _ROTATE_REASONS = ("RateLimited", "HTTP 502")
+
+    def _should_rotate(self, reason: str) -> bool:
+        return any(r in reason for r in self._ROTATE_REASONS)
+
+    def _current_client(self) -> "QwenAIClient | None":
+        """Return token aktif saat ini (non-exhausted). Rotate kalau exhausted."""
+        available = self._available_clients()
+        if not available:
+            return None
+        return available[self._rr_idx % len(available)]
+
+    def _rotate(self, reason: str = ""):
+        """Advance ke token berikutnya dan log alasannya."""
+        self._rr_idx += 1
+        client = self._current_client()
+        slot = client.slot if client else "?"
+        print(f"[QwenAI] 🔄 Token rotated → slot {slot} | reason: {reason}")
+
     async def analyze_batch(self, items: list) -> list:
+        """
+        Proses semua item menggunakan 1 token aktif secara paralel.
+        Rotate token hanya kalau ada item yang error 502 / RateLimited.
+        Item yang error di-retry dengan token baru — bukan paralel multi-token.
+        """
         if not self.clients:
             return [self._no_trade("No tokens configured")] * len(items)
 
-        available = self._available_clients()
+        client = self._current_client()
+        if not client:
+            return [self._no_trade("No tokens available")] * len(items)
+
+        print(f"[QwenAI] analyze_batch: {len(items)} item(s) via token slot {client.slot}")
+
+        # Semua item jalan paralel pakai token yang sama
         tasks = []
-        for i, item in enumerate(items):
-            sym = item[0]
-            tfs = item[1]
+        for item in items:
+            sym   = item[0]
+            tfs   = item[1]
             price = item[2] if len(item) > 2 else None
-            client = available[i % len(available)]
             tasks.append(asyncio.create_task(client.analyze(sym, tfs, price)))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        # Kalau token exhausted saat batch jalan, retry item itu dengan token lain
+
+        # Cek apakah ada yang perlu rotate + retry
         final = []
         for i, r in enumerate(results):
-            if isinstance(r, dict) and "RateLimited" in r.get("reason", ""):
-                available2 = self._available_clients()
-                if available2:
+            if isinstance(r, Exception):
+                r = self._no_trade(f"Task exception: {r}")
+
+            reason = r.get("reason", "") if isinstance(r, dict) else ""
+            if self._should_rotate(reason):
+                self._rotate(reason)
+                retry_client = self._current_client()
+                if retry_client and retry_client is not client:
                     sym, tfs, *rest = items[i]
                     price = rest[0] if rest else None
-                    client2 = available2[i % len(available2)]
-                    print(f"[ParallelQwen] Retrying {sym} with token slot {client2.slot}")
+                    print(f"[QwenAI] Retry {sym} → slot {retry_client.slot}")
                     try:
-                        r = await client2.analyze(sym, tfs, price)
+                        r = await retry_client.analyze(sym, tfs, price)
                     except Exception as e:
                         r = self._no_trade(f"Retry failed: {e}")
-            final.append(r if isinstance(r, dict) else self._no_trade(f"Task exception: {r}"))
+
+            final.append(r if isinstance(r, dict) else self._no_trade(str(r)))
         return final
 
     async def analyze(
@@ -661,20 +699,26 @@ class ParallelQwenAI:
         candles_by_tf: dict,
         current_price: float = None,
     ) -> dict:
+        """
+        Analisis satu simbol dengan token aktif saat ini.
+        Rotate ke token berikutnya HANYA kalau dapat 502 atau RateLimited.
+        """
         if not self.clients:
             return self._no_trade("No tokens configured")
-        available = self._available_clients()
-        client = available[self._rr_idx % len(available)]
-        self._rr_idx += 1
+
+        client = self._current_client()
+        if not client:
+            return self._no_trade("No tokens available")
+
         result = await client.analyze(symbol, candles_by_tf, current_price)
-        # Kalau exhausted, coba token lain sekali
-        if "RateLimited" in result.get("reason", ""):
-            available2 = self._available_clients()
-            if available2:
-                client2 = available2[self._rr_idx % len(available2)]
-                self._rr_idx += 1
-                print(f"[ParallelQwen] Retrying {symbol} with token slot {client2.slot}")
-                result = await client2.analyze(symbol, candles_by_tf, current_price)
+
+        if self._should_rotate(result.get("reason", "")):
+            self._rotate(result["reason"])
+            retry_client = self._current_client()
+            if retry_client and retry_client is not client:
+                print(f"[QwenAI] Retry {symbol} → slot {retry_client.slot}")
+                result = await retry_client.analyze(symbol, candles_by_tf, current_price)
+
         return result
 
     def _no_trade(self, reason: str) -> dict:
