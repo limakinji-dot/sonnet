@@ -259,9 +259,6 @@ class BotEngine:
         logger.info("Bot scanner loop started")
         print("Bot scanner loop started")
 
-        n_workers = max(len(qwen_ai.clients), 1)
-        print(f"[BotEngine] Parallel workers: {n_workers}")
-
         await asyncio.sleep(2)
 
         while self.running:
@@ -289,59 +286,42 @@ class BotEngine:
                     continue
 
                 self.state["status"] = "RUNNING"
-                i = 0
-                while i < len(pool) and self.running:
+
+                for sym in pool:
+                    if not self.running:
+                        break
                     if self._active_count() >= MAX_ACTIVE_SIGNALS:
                         break
 
-                    batch = pool[i:i + n_workers]
-                    i += n_workers
+                    print(f"\n[Scan] {sym}")
+                    self._emit("status", f"Scanning: {sym}")
 
-                    print(f"\n[Batch] {', '.join(batch)}")
-                    self._emit("status", f"Scanning: {', '.join(batch)}")
+                    # Fetch market data untuk simbol ini (timeframes tetap paralel — beda endpoint)
+                    mresult = await self._fetch_market_data(sym)
+                    self._pass_scanned.add(sym)
 
-                    market_tasks = [
-                        asyncio.create_task(self._fetch_market_data(sym))
-                        for sym in batch
-                    ]
-                    market_results = await asyncio.gather(*market_tasks, return_exceptions=True)
-
-                    ai_items = []
-                    skip_syms = []
-
-                    for sym, mresult in zip(batch, market_results):
-                        if isinstance(mresult, Exception) or mresult is None:
-                            skip_syms.append(sym)
-                            continue
-                        candles_by_tf, current_price = mresult
-                        if not candles_by_tf or current_price <= 0:
-                            skip_syms.append(sym)
-                            continue
-                        ai_items.append((sym, candles_by_tf, current_price))
-
-                    for sym in skip_syms:
-                        self._pass_scanned.add(sym)
-
-                    if not ai_items:
+                    if mresult is None:
                         await asyncio.sleep(INTER_SYMBOL_DELAY)
                         continue
 
-                    ai_items = ai_items[:n_workers]
-                    print(f" Sending {len(ai_items)} AI requests in parallel…")
-                    signals = await qwen_ai.analyze_batch(ai_items)
+                    candles_by_tf, current_price = mresult
+                    if not candles_by_tf or current_price <= 0:
+                        await asyncio.sleep(INTER_SYMBOL_DELAY)
+                        continue
 
-                    for (sym, candles_by_tf, current_price), signal in zip(ai_items, signals):
-                        found = self._process_signal(sym, current_price, signal)
-                        self._pass_scanned.add(sym)
+                    # Analisis AI — 1 simbol, 1 token, sequential
+                    print(f" Sending AI request for {sym}…")
+                    signal = await qwen_ai.analyze(sym, candles_by_tf, current_price)
 
-                        if found:
-                            self._emit("progress", {
-                                "active_signal_count": self._active_count(),
-                                "max_active_signals": MAX_ACTIVE_SIGNALS,
-                                "symbols_scanned": self.state["symbols_scanned"],
-                            })
-                        if self._active_count() >= MAX_ACTIVE_SIGNALS:
-                            break
+                    found = self._process_signal(sym, current_price, signal)
+                    if found:
+                        self._emit("progress", {
+                            "active_signal_count": self._active_count(),
+                            "max_active_signals": MAX_ACTIVE_SIGNALS,
+                            "symbols_scanned": self.state["symbols_scanned"],
+                        })
+                    if self._active_count() >= MAX_ACTIVE_SIGNALS:
+                        break
 
                     await asyncio.sleep(INTER_SYMBOL_DELAY)
 
