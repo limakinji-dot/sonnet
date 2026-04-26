@@ -585,6 +585,34 @@ class ParallelQwenAI:
                 f"charts={'ON' if HAS_CHARTS else 'OFF (install matplotlib)'}"
             )
 
+    def reload_tokens(self):
+        """
+        Hot-reload token list dari token_manager tanpa restart server.
+        Dipanggil oleh admin_routes setelah update via API.
+        """
+        from services.token_manager import token_manager  # local import — hindari circular
+
+        # Tutup client lama
+        for client in self.clients:
+            # httpx.AsyncClient.aclose() adalah coroutine — jadwalkan kalau ada loop
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(client.close())
+            except Exception:
+                pass
+
+        # Buat client baru dari token terbaru
+        self.clients = []
+        self._rr_idx = 0
+        for slot, token in enumerate(token_manager.get_tokens(), 1):
+            if token:
+                self.clients.append(QwenAIClient(token=token, slot=slot))
+                print(f"[ParallelQwen] 🔄 Token slot {slot} reloaded")
+
+        print(f"[ParallelQwen] reload_tokens: {len(self.clients)} active token(s)")
+
     def _available_clients(self) -> list:
         """Return clients yang belum exhausted. Kalau semua exhausted, return semua (reset)."""
         available = [c for c in self.clients if not c.exhausted]
