@@ -49,6 +49,11 @@ def init_db():
             created_at INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS signals (
             id TEXT PRIMARY KEY,
             user_id TEXT,
@@ -209,3 +214,19 @@ def db_count_signals(user_id: Optional[str] = None, status: Optional[str] = None
             query += ' AND result = ?'
             params.append(result)
         return conn.execute(query, params).fetchone()[0]
+# ── Settings (key-value store) ──
+def get_setting(key: str) -> Optional[str]:
+    """Baca satu setting dari tabel settings."""
+    with get_db() as conn:
+        row = conn.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+        return row[0] if row else None
+
+def set_setting(key: str, value: str):
+    """Simpan/update satu setting ke tabel settings (upsert)."""
+    with get_db() as conn:
+        conn.execute(
+            'INSERT INTO settings (key, value) VALUES (?, ?)'
+            ' ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            (key, value)
+        )
+        conn.commit()
