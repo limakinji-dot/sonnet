@@ -1,6 +1,6 @@
 import asyncio
 import os
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -43,15 +43,6 @@ app.include_router(bot.router,     prefix="/api/bot",     tags=["bot"])
 app.include_router(market.router,  prefix="/api/market",  tags=["market"])
 app.include_router(history.router, prefix="/api/history", tags=["history"])
 app.include_router(admin_routes.router, prefix="/api/admin", tags=["admin"])
-
-@app.websocket("/api/bot/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws_manager.connect(ws)
-    try:
-        while True:
-            await ws.receive_text()
-    except Exception:
-        ws_manager.disconnect(ws)
 
 @app.get("/api/health")
 async def health():
