@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/useAuthContext";
 import { useTrading } from "@/hooks/useTradingContext";
-import { register, getBotState, startBot, stopBot, resetBot } from "@/lib/api";
+import { register, getBotState, startBot, stopBot, resetBot, apiFetch } from "@/lib/api";
 import SignalFeed from "@/components/ui/SignalFeed";
 import TradeHistoryTable from "@/components/ui/TradeHistoryTable";
 import WinRateChart from "@/components/dashboard/WinRateChart";
