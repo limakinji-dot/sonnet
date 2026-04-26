@@ -3,6 +3,7 @@ from typing import List
 
 from services.token_manager import token_manager
 from services.qwen_ai import qwen_ai
+from services.position_ai import position_ai
 from routes.auth_routes import require_admin  # ← JWT guard
 
 router = APIRouter()
@@ -41,6 +42,8 @@ async def update_tokens(request: Request, admin=Depends(require_admin)):
 
     # Hot-reload Qwen AI clients
     qwen_ai.reload_tokens()
+    # Hot-reload PositionAI token pool (kalau tidak pakai MONITOR_TOKEN dedicated)
+    position_ai.reload_tokens()
 
     return {
         "ok": True,
@@ -66,4 +69,5 @@ async def reset_exhausted(admin=Depends(require_admin)):
     """Reset semua exhausted flag. Admin only."""
     for client in qwen_ai.clients:
         client.exhausted = False
-    return {"ok": True, "message": f"{len(qwen_ai.clients)} token slot(s) reset"}
+    position_ai.reset_exhausted()
+    return {"ok": True, "message": f"{len(qwen_ai.clients)} qwen + position_ai token slot(s) reset"}
