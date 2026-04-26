@@ -2,15 +2,16 @@
 Position Monitor AI — HOLD or CLOSE untuk posisi yang sudah entry.
 
 Features:
- • Hanya 1 token (MONITOR_TOKEN_1, atau fallback ke QWEN_TOKEN_1)
+ • Multi-token pool (MONITOR_TOKEN_1..5, fallback ke QWEN_TOKEN_1..5 via token_manager)
+ • Token rotation saat image_upload_failed — langsung coba token berikutnya
  • Pakai ai_lock() agar tidak bentrok dengan analysis AI
  • Retry terus sampai dapat HOLD/CLOSE/SL+ yang valid
  • Menyertakan opened_at, original_prompt, dan original_ai_response
  • SL+ enhanced: trigger SL+ ketika TP1 sudah tercapai dan PnL positif
 
 Env vars:
- MONITOR_TOKEN_1 — bearer token khusus monitor
- (kalau tidak diset, fallback ke QWEN_TOKEN_1)
+ MONITOR_TOKEN_1..5 — bearer token khusus monitor (opsional)
+ (kalau tidak diset, fallback ke QWEN_TOKEN_1..5 dari token_manager)
  MONITOR_INTERVAL_SECONDS — seberapa sering query per posisi (default: 120s)
  QWEN_BASE_URL / QWEN_MODEL / QWEN_THINKING_MODE — shared dengan qwen_ai.py
 """
@@ -37,17 +38,34 @@ from services.ai_lock import ai_lock
 
 logger = logging.getLogger(__name__)
 
+from services.token_manager import token_manager
+
 MONITOR_INTERVAL = int(os.getenv("MONITOR_INTERVAL_SECONDS", "120"))
 
-_token = (
-    os.getenv("MONITOR_TOKEN_1", "").strip()
-    or os.getenv("QWEN_TOKEN_1", "").strip()
-)
-
-if _token:
-    print(f"[PositionAI] token loaded | interval={MONITOR_INTERVAL}s")
-else:
+def _load_monitor_tokens() -> list[str]:
+    """
+    Load token pool untuk PositionAI.
+    Priority:
+      1. MONITOR_TOKEN_1..5 (khusus monitor, dari env)
+      2. Fallback ke token_manager (QWEN_TOKEN_1..5)
+    """
+    monitor_tokens = []
+    for i in range(1, 6):
+        t = os.getenv(f"MONITOR_TOKEN_{i}", "").strip()
+        if t:
+            monitor_tokens.append(t)
+    if monitor_tokens:
+        print(f"[PositionAI] {len(monitor_tokens)} dedicated MONITOR_TOKEN(s) loaded | interval={MONITOR_INTERVAL}s")
+        return monitor_tokens
+    # Fallback ke qwen tokens
+    qwen_tokens = token_manager.get_tokens()
+    if qwen_tokens:
+        print(f"[PositionAI] No MONITOR_TOKEN found — sharing {len(qwen_tokens)} QWEN_TOKEN(s) | interval={MONITOR_INTERVAL}s")
+        return qwen_tokens
     print("[PositionAI] no token — set MONITOR_TOKEN_1 or QWEN_TOKEN_1")
+    return []
+
+_tokens: list[str] = _load_monitor_tokens()
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +168,15 @@ def _elapsed(opened_at_ms: Optional[int]) -> str:
         return "unknown"
 
 
+class _ImageUploadFailed(Exception):
+    """Raised internally saat 502 image_upload_failed — sinyal ke pool untuk rotate token."""
+    pass
+
+
 class PositionAIClient:
-    def __init__(self, token: str):
+    def __init__(self, token: str, slot: int = 1):
         self.token = token
+        self.slot = slot
         self.client = httpx.AsyncClient(timeout=180)
         self.exhausted = False  # True kalau kena rate limit harian
 
@@ -365,7 +389,7 @@ class PositionAIClient:
                         return None
                     if resp.status_code == 429:
                         self.exhausted = True
-                        print(f"[PositionAI] 🚫 Token rate-limited (429) — marked exhausted")
+                        print(f"[PositionAI] 🚫 Token slot={self.slot} rate-limited (429) — marked exhausted")
                         return None
                     if resp.status_code == 502:
                         try:
@@ -376,13 +400,13 @@ class PositionAIClient:
                             code, detail = "", ""
                         if code == "RateLimited" or "upper limit" in detail.lower() or "usage" in detail.lower():
                             self.exhausted = True
-                            print(f"[PositionAI] 🚫 Daily limit reached — marked exhausted")
+                            print(f"[PositionAI] 🚫 Token slot={self.slot} daily limit — marked exhausted")
                             return None
                         if code == "image_upload_failed":
-                            print(f"[PositionAI] ⚠️ Image upload failed for {symbol} — retrying text-only")
-                            use_charts = False
-                            continue
-                        logger.error(f"[PositionAI] HTTP 502: {resp.text[:200]}")
+                            # Jangan retry text-only — raise supaya pool bisa rotate ke token lain
+                            print(f"[PositionAI] ⚠️ Image upload failed slot={self.slot} — raising for token rotation")
+                            raise _ImageUploadFailed(f"image_upload_failed on slot {self.slot}")
+                        logger.error(f"[PositionAI] HTTP 502 slot={self.slot}: {resp.text[:200]}")
                         return None
                     if resp.status_code != 200:
                         logger.error(f"[PositionAI] HTTP {resp.status_code}: {resp.text[:200]}")
@@ -459,13 +483,38 @@ class PositionAIClient:
 
 class PositionMonitorAI:
     def __init__(self):
-        self._client: Optional[PositionAIClient] = None
-        if _token:
-            self._client = PositionAIClient(token=_token)
+        self._clients: list[PositionAIClient] = []
+        self._current_idx: int = 0
+        self._reload_tokens()
+
+    def _reload_tokens(self):
+        """Buat/update client pool dari token list terbaru."""
+        old_clients = self._clients
+        self._clients = [
+            PositionAIClient(token=t, slot=i + 1)
+            for i, t in enumerate(_load_monitor_tokens())
+        ]
+        # Tutup client lama
+        for c in old_clients:
+            asyncio.create_task(c.close()) if asyncio.get_event_loop().is_running() else None
+        self._current_idx = 0
+        print(f"[PositionAI] Pool ready: {len(self._clients)} token(s)")
 
     @property
     def enabled(self) -> bool:
-        return self._client is not None
+        return len(self._clients) > 0
+
+    def _next_client(self) -> Optional["PositionAIClient"]:
+        """Round-robin: lewati token yang exhausted."""
+        total = len(self._clients)
+        if not total:
+            return None
+        for _ in range(total):
+            client = self._clients[self._current_idx % total]
+            self._current_idx = (self._current_idx + 1) % total
+            if not client.exhausted:
+                return client
+        return None  # semua exhausted
 
     async def decide_with_retry(
         self,
@@ -486,32 +535,56 @@ class PositionMonitorAI:
         tp1: float = None,
         max_retries: int = 999,
     ) -> dict:
-        """Retry sampai dapat HOLD/CLOSE/SL+. Backoff 10s → 30s."""
-        if not self._client:
+        """
+        Retry sampai dapat HOLD/CLOSE/SL+.
+        - Saat image_upload_failed → rotate ke token berikutnya (tidak tunggu)
+        - Saat exhausted → skip token, coba yang lain
+        - Backoff 10s → 30s untuk error lain
+        """
+        if not self._clients:
             return {"decision": "HOLD", "reason": "No token configured"}
 
-        for attempt in range(max_retries):
-            if self._client.exhausted:
-                print(f"[PositionAI] Token exhausted — HOLD {symbol} sampai token direset")
-                return {"decision": "HOLD", "reason": "Token daily limit reached — holding position"}
+        image_fail_slots: set[int] = set()  # track slot yang gagal image di round ini
 
-            result = await self._client.decide(
-                symbol=symbol,
-                direction=direction,
-                entry=entry,
-                tp=tp,
-                sl=sl,
-                current_price=current_price,
-                candles_by_tf=candles_by_tf,
-                leverage=leverage,
-                margin_usdt=margin_usdt,
-                original_analysis=original_analysis,
-                opened_at=opened_at,
-                original_prompt=original_prompt,
-                original_ai_response=original_ai_response,
-                sl_plus_history=sl_plus_history,
-                tp1=tp1,
-            )
+        for attempt in range(max_retries):
+            client = self._next_client()
+            if client is None:
+                print(f"[PositionAI] All tokens exhausted — HOLD {symbol}")
+                return {"decision": "HOLD", "reason": "All tokens exhausted — holding position"}
+
+            try:
+                result = await client.decide(
+                    symbol=symbol,
+                    direction=direction,
+                    entry=entry,
+                    tp=tp,
+                    sl=sl,
+                    current_price=current_price,
+                    candles_by_tf=candles_by_tf,
+                    leverage=leverage,
+                    margin_usdt=margin_usdt,
+                    original_analysis=original_analysis,
+                    opened_at=opened_at,
+                    original_prompt=original_prompt,
+                    original_ai_response=original_ai_response,
+                    sl_plus_history=sl_plus_history,
+                    tp1=tp1,
+                )
+            except _ImageUploadFailed:
+                # Token ini gagal upload image — langsung rotate, tanpa sleep
+                image_fail_slots.add(client.slot)
+                print(
+                    f"[PositionAI] ↻ Image fail slot={client.slot} — rotating to next token "
+                    f"(failed slots this round: {image_fail_slots})"
+                )
+                # Kalau semua token sudah gagal image → retry dengan delay
+                if len(image_fail_slots) >= len(self._clients):
+                    image_fail_slots.clear()
+                    wait = min(10 * (attempt + 1), 30)
+                    print(f"[PositionAI] All tokens failed image for {symbol} — wait {wait}s before retry")
+                    await asyncio.sleep(wait)
+                continue  # langsung coba token berikutnya
+
             if result and result.get("decision") in ("HOLD", "CLOSE", "SL+"):
                 return result
 
@@ -522,14 +595,18 @@ class PositionMonitorAI:
         return {"decision": "HOLD", "reason": "Retries exhausted"}
 
     def reset_exhausted(self):
-        """Reset exhausted flag — dipanggil saat token di-update via admin route."""
-        if self._client:
-            self._client.exhausted = False
-            print("[PositionAI] Exhausted flag reset")
+        """Reset exhausted flag semua token — dipanggil saat token di-update via admin route."""
+        for c in self._clients:
+            c.exhausted = False
+        print(f"[PositionAI] Exhausted flags reset for {len(self._clients)} token(s)")
+
+    def reload_tokens(self):
+        """Hot-reload token pool (dipanggil dari admin route setelah update token)."""
+        self._reload_tokens()
 
     async def close(self):
-        if self._client:
-            await self._client.close()
+        for c in self._clients:
+            await c.close()
 
 
 position_ai = PositionMonitorAI()
