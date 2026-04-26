@@ -215,15 +215,23 @@ def db_count_signals(user_id: Optional[str] = None, status: Optional[str] = None
             params.append(result)
         return conn.execute(query, params).fetchone()[0]
 # ── Settings (key-value store) ──
+_SETTINGS_DDL = "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"
+
+def _ensure_settings_table(conn):
+    """Auto-create settings table. Safe to call before init_db() runs."""
+    conn.execute(_SETTINGS_DDL)
+
 def get_setting(key: str) -> Optional[str]:
-    """Baca satu setting dari tabel settings."""
+    """Baca satu setting. Aman dipanggil sebelum init_db() selesai."""
     with get_db() as conn:
+        _ensure_settings_table(conn)
         row = conn.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
         return row[0] if row else None
 
 def set_setting(key: str, value: str):
-    """Simpan/update satu setting ke tabel settings (upsert)."""
+    """Simpan/update satu setting (upsert). Aman dipanggil sebelum init_db() selesai."""
     with get_db() as conn:
+        _ensure_settings_table(conn)
         conn.execute(
             'INSERT INTO settings (key, value) VALUES (?, ?)'
             ' ON CONFLICT(key) DO UPDATE SET value = excluded.value',
