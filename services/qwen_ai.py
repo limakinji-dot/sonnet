@@ -659,38 +659,40 @@ class ParallelQwenAI:
         if not client:
             return [self._no_trade("No tokens available")] * len(items)
 
-        print(f"[QwenAI] analyze_batch: {len(items)} item(s) via token slot {client.slot}")
+        print(f"[QwenAI] analyze_batch: {len(items)} item(s) via token slot {client.slot} (sequential)")
 
-        # Semua item jalan paralel pakai token yang sama
-        tasks = []
+        # Proses satu per satu — bukan paralel
+        final = []
         for item in items:
             sym   = item[0]
             tfs   = item[1]
             price = item[2] if len(item) > 2 else None
-            tasks.append(asyncio.create_task(client.analyze(sym, tfs, price)))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Ambil token aktif saat ini (bisa berubah kalau terjadi rotate)
+            cur = self._current_client()
+            if not cur:
+                final.append(self._no_trade("No tokens available"))
+                continue
 
-        # Cek apakah ada yang perlu rotate + retry
-        final = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                r = self._no_trade(f"Task exception: {r}")
+            try:
+                r = await cur.analyze(sym, tfs, price)
+            except Exception as e:
+                r = self._no_trade(f"Task exception: {e}")
 
+            # Rotate hanya kalau error 502 / RateLimited, lalu retry sekali
             reason = r.get("reason", "") if isinstance(r, dict) else ""
             if self._should_rotate(reason):
                 self._rotate(reason)
-                retry_client = self._current_client()
-                if retry_client and retry_client is not client:
-                    sym, tfs, *rest = items[i]
-                    price = rest[0] if rest else None
-                    print(f"[QwenAI] Retry {sym} → slot {retry_client.slot}")
+                retry = self._current_client()
+                if retry and retry is not cur:
+                    print(f"[QwenAI] Retry {sym} → slot {retry.slot}")
                     try:
-                        r = await retry_client.analyze(sym, tfs, price)
+                        r = await retry.analyze(sym, tfs, price)
                     except Exception as e:
                         r = self._no_trade(f"Retry failed: {e}")
 
             final.append(r if isinstance(r, dict) else self._no_trade(str(r)))
+
         return final
 
     async def analyze(
