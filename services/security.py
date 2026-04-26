@@ -11,15 +11,29 @@ _rate_limit_store = {}
 # Path yang selalu public (tanpa API Key)
 PUBLIC_PATHS = {"/api/health", "/api/bot/ws"}
 
-# Path read-only GET yang public (history, bot state, balance)
+# Path read-only GET yang public (exact match)
 PUBLIC_GET_PATHS = {
     "/api/history/signals",
     "/api/history/summary",
     "/api/bot/state",
     "/api/bot/signals",
     "/api/bot/stats",
+    "/api/bot/balance",
     "/api/trading/balance",
+    "/api/trading/positions",
+    "/api/trading/history",
+    "/api/trading/settings",
+    "/api/market/contracts",
+    "/api/market/tickers",
 }
+
+# Prefix public untuk dynamic segments, e.g. /api/market/ticker/BTC_USDT
+PUBLIC_GET_PREFIXES = (
+    "/api/market/ticker/",
+    "/api/market/candles/",
+    "/api/history/signals/",
+    "/api/history/summary/",
+)
 
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -29,8 +43,11 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if path in PUBLIC_PATHS or request.method == "OPTIONS":
             return await call_next(request)
 
-        # ── PUBLIC GET BYPASS: read-only endpoints ──
-        if request.method == "GET" and path in PUBLIC_GET_PATHS:
+        # Public GET: exact path atau prefix match
+        if request.method == "GET" and (
+            path in PUBLIC_GET_PATHS
+            or any(path.startswith(p) for p in PUBLIC_GET_PREFIXES)
+        ):
             return await call_next(request)
 
         # ── Standard API Key check untuk endpoint lain ──
