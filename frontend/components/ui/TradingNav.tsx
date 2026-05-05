@@ -31,7 +31,20 @@ export default function TradingNav() {
             SONNET<span className="text-[#d4a847]">RADE</span>
           </Link>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Agent World button — always visible */}
+            <Link
+              href="/world"
+              className={`px-3 sm:px-4 py-2 rounded-lg text-[10px] font-mono tracking-widest transition-colors border ${
+                pathname === "/world"
+                  ? "bg-[#d4a847]/15 border-[#d4a847]/40 text-[#d4a847]"
+                  : "bg-white/[0.03] border-white/[0.08] text-white/40 hover:text-white/70 hover:bg-white/[0.06] hover:border-white/15"
+              }`}
+            >
+              <span className="hidden sm:inline">AGENT WORLD</span>
+              <span className="sm:hidden">WORLD</span>
+            </Link>
+
             {isAuthenticated ? (
               <>
                 <span className="hidden sm:inline text-[10px] font-mono text-white/30 tracking-widest">
@@ -45,7 +58,7 @@ export default function TradingNav() {
                 </button>
                 <button
                   onClick={logout}
-                  className="px-4 py-2 rounded-lg glass text-[10px] font-mono text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors"
+                  className="px-4 py-2 rounded-lg glass text-[10px] font-mono text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors border border-white/10"
                 >
                   LOGOUT
                 </button>
