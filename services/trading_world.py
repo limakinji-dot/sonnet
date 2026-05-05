@@ -442,21 +442,21 @@ async def _kirim_pesan(
                     if not data.get("choices"):
                         continue
                     delta   = data["choices"][0].get("delta", {})
-                    phase   = delta.get("phase", "answer")   # 'think' | 'answer'
+                    phase   = delta.get("phase", "answer")
                     content = delta.get("content", "")
                     status  = delta.get("status", "")
 
-                    if phase == "think":
+                    if phase == "thinking_summary":          # FIX 1: "think" → "thinking_summary"
                         # Kumpulkan thinking tapi JANGAN masuk ke reply
+                        # FIX 2: tidak break di sini walau status=="finished"
                         if content:
                             think_buf += content
                     else:
                         # Phase 'answer' — ini yang kita mau
                         if content:
                             full_reply += content
-
-                    if status == "finished":
-                        break
+                        if status == "finished":             # FIX 2: break HANYA saat answer finished
+                            break
                 except (json.JSONDecodeError, KeyError):
                     continue
 
