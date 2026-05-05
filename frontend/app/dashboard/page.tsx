@@ -10,7 +10,6 @@ import SignalFeed from "@/components/ui/SignalFeed";
 import TradeHistoryTable from "@/components/ui/TradeHistoryTable";
 import WinRateChart from "@/components/dashboard/WinRateChart";
 import SettingsPanel from "@/components/dashboard/SettingsPanel";
-import TradingWorldSection from "@/components/dashboard/TradingWorldSection";
 import Link from "next/link";
 
 export default function DashboardPage() {
@@ -233,11 +232,6 @@ export default function DashboardPage() {
             </motion.div>
           </div>
         </div>
-      {/* Trading World Simulation */}
-      <div className="mt-6 sm:mt-8">
-        <TradingWorldSection />
-      </div>
-
       </div>
     </main>
   );
