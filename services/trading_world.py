@@ -4,17 +4,6 @@ Trading World Simulation Engine — 20 Agent / 3 Ronde / Reverse API
 Perubahan dari versi sebelumnya:
   - Client bukan lagi httpx ke gateway
   - Langsung reverse API ke chat.qwen.ai (sama persis cara di testt.py)
-  - Tiap agent call: buat_chat → kirim_pesan (streaming) → hapus_chat
-  - Karena tiap call buat chat BARU, bisa full parallel tanpa saling block
-  - 5 bearer token JWT dirotasi round-robin ke 20 agent (4 batch × 5)
-
-Cara ambil JWT Token:
-  1. Buka https://chat.qwen.ai → login
-  2. F12 → Application → Local Storage → https://chat.qwen.ai
-  3. Copy nilai 'token'
-  4. Set di Railway: QWEN_TOKEN_1..5
-
-Prompt analisa TIDAK DIUBAH — sama persis dengan qwen_ai.py original.
 """
 
 import asyncio
