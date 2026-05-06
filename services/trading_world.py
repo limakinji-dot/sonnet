@@ -21,6 +21,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Lazy import ws_manager to avoid circular imports
+def _get_ws():
+    try:
+        from services.ws_manager import ws_manager
+        return ws_manager
+    except Exception:
+        return None
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -802,6 +810,26 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
         confidence=int(result.get("confidence", 0)),
     )
     print(f"{tag} ✅ {decision} conf={op.confidence}% | {op.reason[:60]}")
+
+    # Broadcast realtime ke frontend via WebSocket
+    try:
+        ws = _get_ws()
+        if ws:
+            import asyncio as _asyncio
+            _asyncio.create_task(ws.broadcast("agent_update", {
+                "agent_id":   op.agent_id,
+                "agent_name": op.agent_name,
+                "round_num":  op.round_num,
+                "decision":   op.decision,
+                "confidence": op.confidence,
+                "reason":     op.reason[:120],
+                "entry":      op.entry,
+                "tp1":        op.tp1,
+                "sl":         op.sl,
+            }))
+    except Exception:
+        pass
+
     return op
 
 # ---------------------------------------------------------------------------
@@ -932,6 +960,9 @@ def _build_narrative(symbol, price, r1, r2, r3, vote, final, levels, n_tokens) -
 # Main Simulation World
 # ---------------------------------------------------------------------------
 
+LATEST_SIM_PATH = os.getenv("LATEST_SIM_PATH", "/tmp/latest_sim.json")
+
+
 class TradingWorldSimulation:
     """
     Virtual trading world — 20 agent / 5 JWT token reverse API / 3 ronde.
@@ -942,6 +973,48 @@ class TradingWorldSimulation:
         self.tokens: List[str] = []
         self.simulation_log: List[ConsensusResult] = []
         self._load_tokens()
+        self._restore_latest()
+
+    def _restore_latest(self):
+        """Load hasil simulasi terakhir dari file (survive server restart)."""
+        try:
+            if os.path.exists(LATEST_SIM_PATH):
+                with open(LATEST_SIM_PATH, "r") as f:
+                    data = json.load(f)
+                def _ops(lst):
+                    return [AgentOpinion(**{k: v for k, v in o.items()}) for o in (lst or [])]
+                result = ConsensusResult(
+                    simulation_id=data["simulation_id"],
+                    symbol=data["symbol"],
+                    current_price=data["current_price"],
+                    timestamp=data["timestamp"],
+                    agent_count=data["agent_count"],
+                    token_count=data["token_count"],
+                    round1_opinions=_ops(data.get("round1_opinions", [])),
+                    round2_opinions=_ops(data.get("round2_opinions", [])),
+                    round3_opinions=_ops(data.get("round3_opinions", [])),
+                    final_decision=data["final_decision"],
+                    consensus_entry=data.get("consensus_entry"),
+                    consensus_tp1=data.get("consensus_tp1"),
+                    consensus_tp2=data.get("consensus_tp2"),
+                    consensus_tp_max=data.get("consensus_tp_max"),
+                    consensus_sl=data.get("consensus_sl"),
+                    consensus_confidence=data.get("consensus_confidence", 0),
+                    vote_breakdown=data.get("vote_breakdown", {}),
+                    narrative=data.get("narrative", ""),
+                )
+                self.simulation_log.append(result)
+                print(f"[SimWorld] Restored: {result.simulation_id} | {result.symbol} | {result.final_decision}")
+        except Exception as e:
+            logger.warning(f"[SimWorld] Could not restore latest sim: {e}")
+
+    def _persist_latest(self, result: ConsensusResult):
+        """Simpan hasil simulasi terbaru ke file JSON agar survive restart."""
+        try:
+            with open(LATEST_SIM_PATH, "w") as f:
+                json.dump(result.to_dict(), f)
+        except Exception as e:
+            logger.warning(f"[SimWorld] Could not persist: {e}")
 
     def _load_tokens(self):
         for i in range(1, 6):
@@ -996,6 +1069,19 @@ class TradingWorldSimulation:
         if not self.tokens:
             raise RuntimeError("No JWT tokens. Set QWEN_TOKEN_1..5")
 
+        # Broadcast sim start — semua node jadi THINKING di frontend
+        try:
+            ws = _get_ws()
+            if ws:
+                await ws.broadcast("sim_start", {
+                    "symbol":       symbol,
+                    "current_price": current_price,
+                    "agent_count":  n,
+                    "agents": [{"id": p["id"], "name": p["name"]} for p in AGENT_PERSONAS],
+                })
+        except Exception:
+            pass
+
         # [IMAGE UPLOAD DINONAKTIFKAN] — text-only mode
         # Generate candlestick charts (base64) — akan di-upload ke OSS per agent call
         # loop = asyncio.get_event_loop()
@@ -1029,22 +1115,39 @@ class TradingWorldSimulation:
             tf_blocks.append("\n".join(lines))
         ohlcv_text = "\n\n".join(tf_blocks) or "No data"
 
+        async def _broadcast_round(rnd, opinions):
+            try:
+                ws = _get_ws()
+                if ws:
+                    await ws.broadcast("round_done", {
+                        "round_num": rnd,
+                        "opinions": [{"agent_id": o.agent_id, "agent_name": o.agent_name,
+                                      "decision": o.decision, "confidence": o.confidence,
+                                      "reason": o.reason[:120], "entry": o.entry,
+                                      "tp1": o.tp1, "sl": o.sl} for o in opinions],
+                    })
+            except Exception:
+                pass
+
         # Round 1 — Independent
         print(f"\n[SimWorld] ─── ROUND 1 ───")
         r1 = await self._run_round(1, symbol, candles_by_tf, current_price, charts, ohlcv_text,
                                     market_context="", progress_cb=progress_cb)
+        await _broadcast_round(1, r1)
 
         # Round 2 — Deliberasi
         r1_ctx = "ROUND 1 OPINIONS:\n" + _build_room_context(r1)
         print(f"\n[SimWorld] ─── ROUND 2 ───")
         r2 = await self._run_round(2, symbol, candles_by_tf, current_price, charts, ohlcv_text,
                                     market_context=r1_ctx, progress_cb=progress_cb)
+        await _broadcast_round(2, r2)
 
         # Round 3 — Final
         r2_ctx = "ROUND 1:\n" + _build_room_context(r1) + "\n\nROUND 2:\n" + _build_room_context(r2)
         print(f"\n[SimWorld] ─── ROUND 3 ───")
         r3 = await self._run_round(3, symbol, candles_by_tf, current_price, charts, ohlcv_text,
                                     market_context=r2_ctx, progress_cb=progress_cb)
+        await _broadcast_round(3, r3)
 
         # Consensus
         vote   = _weighted_vote(r3)
@@ -1069,6 +1172,7 @@ class TradingWorldSimulation:
             vote_breakdown=vote, narrative=narrative,
         )
         self.simulation_log.append(result)
+        self._persist_latest(result)
         print(f"\n[SimWorld] ═══ FINAL: {final} | conf={pct:.1f}% | entry={levels.get('entry')} ═══\n")
         return result
 
