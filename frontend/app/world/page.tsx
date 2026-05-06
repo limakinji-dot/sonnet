@@ -270,8 +270,10 @@ export default function WorldPage() {
       const API = typeof window !== "undefined" ? window.location.origin : "";
       const res = await fetch(`${API}/sim/latest`);
       if (!res.ok) { setLoading(false); return; }
-      const data: SimResult = await res.json();
-      setResult(data);
+      const data = await res.json();
+      // Backend returns {ok: false, error: "..."} when no simulation yet
+      if (!data.ok && data.error) { setLoading(false); return; }
+      setResult(data as SimResult);
       setLastUpdated(data.timestamp);
       setLoading(false);
 
@@ -307,9 +309,9 @@ export default function WorldPage() {
     result ? [result.round1_opinions, result.round2_opinions, result.round3_opinions][round - 1]?.find((o) => o.agent_id === agentId) : null;
 
   const roundOpinions = result
-    ? roundView === "r1" ? result.round1_opinions
+    ? (roundView === "r1" ? result.round1_opinions
     : roundView === "r2" ? result.round2_opinions
-    : result.round3_opinions
+    : result.round3_opinions) ?? []
     : [];
 
   const vote = result?.vote_breakdown;
