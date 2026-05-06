@@ -478,11 +478,11 @@ export default function WorldPage() {
                 <NeuralCanvas nodes={nodes} edges={edges} selectedId={selectedId} onSelectAgent={setSelectedId} width={canvasSize.w} height={canvasSize.h} />
                 {!result && !loading && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                    <p className="text-[10px] font-mono text-white/20 tracking-[0.3em]">AWAITING FIRST SIMULATION</p>
-                    <p className="text-[9px] font-mono text-white/10 mt-1">Start the bot · nodes light up live</p>
+                    <p className="text-[10px] font-mono text-white/20 tracking-[0.3em]">S</p>
+                    <p className="text-[9px] font-mono text-white/10 mt-1">T</p>
                   </div>
                 )}
-                <p className="absolute bottom-3 right-3 text-[8px] font-mono text-white/15 pointer-events-none">Hover to interact · click to inspect</p>
+                <p className="absolute bottom-3 right-3 text-[8px] font-mono text-white/15 pointer-events-none">·</p>
               </div>
 
               <div className="px-4 py-3 border-t border-white/[0.05] flex items-center gap-2">
