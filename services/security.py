@@ -25,17 +25,20 @@ PUBLIC_GET_PATHS = {
     "/api/trading/settings",
     "/api/market/contracts",
     "/api/market/tickers",
+    "/sim/latest",       # FIX: public — dipoll oleh homepage & /world page
+    "/sim/agents",       # FIX: public — status agent
+    "/sim/log",          # FIX: public — riwayat simulasi
 }
 
-# Prefix public untuk dynamic segments, e.g. /api/market/ticker/BTC_USDT
-# /api/admin/ didaftarkan di sini karena auth-nya di-handle oleh JWT require_admin
-# di dalam route — bukan X-API-Key.
+# Prefix public untuk dynamic segments
 PUBLIC_GET_PREFIXES = (
     "/api/market/ticker/",
     "/api/market/candles/",
     "/api/history/signals/",
     "/api/history/summary/",
     "/api/admin/",
+    "/sim/log/",         # FIX: public — detail per sim_id
+    "/market/",          # FIX: public — candles & price untuk world page
 )
 
 class SecurityMiddleware(BaseHTTPMiddleware):
