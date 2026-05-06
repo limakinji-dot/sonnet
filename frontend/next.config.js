@@ -1,5 +1,10 @@
 /** @type {import('next').NextConfig} */
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "https://web-production-e78a1.up.railway.app";
+
 const nextConfig = {
+  env: {
+    NEXT_PUBLIC_BACKEND_URL: BACKEND_URL,
+  },
   reactStrictMode: true,
   swcMinify: true,
 
@@ -17,16 +22,18 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'https://web-production-e78a1.up.railway.app/api/:path*',
+        destination: `${BACKEND_URL}/api/:path*`,
       },
-      // FIX: tambahkan /sim dan /market agar ter-proxy ke backend
+      // /sim dan /market di-proxy ke backend untuk HTTP requests.
+      // NOTE: WebSocket (/sim/ws) TIDAK bisa lewat Next.js rewrites —
+      // frontend harus connect WS langsung ke BACKEND_URL.
       {
         source: '/sim/:path*',
-        destination: 'https://web-production-e78a1.up.railway.app/sim/:path*',
+        destination: `${BACKEND_URL}/sim/:path*`,
       },
       {
         source: '/market/:path*',
-        destination: 'https://web-production-e78a1.up.railway.app/market/:path*',
+        destination: `${BACKEND_URL}/market/:path*`,
       },
     ];
   },
