@@ -160,7 +160,10 @@ export default function AgentWorldSection() {
       try {
         const res = await fetch("/sim/latest");
         if (!res.ok) return;
-        const data: LatestSim = await res.json();
+        const raw = await res.json();
+        // Guard: only accept valid SimResult
+        if (!raw?.simulation_id) return;
+        const data: LatestSim = raw;
         setLatest(data);
 
         // Update nodes
