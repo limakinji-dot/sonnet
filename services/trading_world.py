@@ -972,6 +972,11 @@ class TradingWorldSimulation:
     def __init__(self):
         self.tokens: List[str] = []
         self.simulation_log: List[ConsensusResult] = []
+        # ── Live simulation state (untuk endpoint /sim/current) ────────────
+        self.is_running: bool = False
+        self.current_round: int = 0
+        self.current_opinions: List[dict] = []
+        # ──────────────────────────────────────────────────────────────────
         self._load_tokens()
         self._restore_latest()
 
@@ -1072,6 +1077,12 @@ class TradingWorldSimulation:
         if not self.tokens:
             raise RuntimeError("No JWT tokens. Set QWEN_TOKEN_1..5")
 
+        # ── Reset live state ───────────────────────────────────────────────
+        self.is_running = True
+        self.current_round = 0
+        self.current_opinions = []
+        # ──────────────────────────────────────────────────────────────────
+
         # Broadcast sim start — semua node jadi THINKING di frontend
         try:
             ws = _get_ws()
@@ -1134,22 +1145,28 @@ class TradingWorldSimulation:
 
         # Round 1 — Independent
         print(f"\n[SimWorld] ─── ROUND 1 ───")
+        self.current_round = 1
         r1 = await self._run_round(1, symbol, candles_by_tf, current_price, charts, ohlcv_text,
                                     market_context="", progress_cb=progress_cb)
+        self.current_opinions = [{"agent_id": o.agent_id, "decision": o.decision, "confidence": o.confidence} for o in r1]
         await _broadcast_round(1, r1)
 
         # Round 2 — Deliberasi
         r1_ctx = "ROUND 1 OPINIONS:\n" + _build_room_context(r1)
         print(f"\n[SimWorld] ─── ROUND 2 ───")
+        self.current_round = 2
         r2 = await self._run_round(2, symbol, candles_by_tf, current_price, charts, ohlcv_text,
                                     market_context=r1_ctx, progress_cb=progress_cb)
+        self.current_opinions = [{"agent_id": o.agent_id, "decision": o.decision, "confidence": o.confidence} for o in r2]
         await _broadcast_round(2, r2)
 
         # Round 3 — Final
         r2_ctx = "ROUND 1:\n" + _build_room_context(r1) + "\n\nROUND 2:\n" + _build_room_context(r2)
         print(f"\n[SimWorld] ─── ROUND 3 ───")
+        self.current_round = 3
         r3 = await self._run_round(3, symbol, candles_by_tf, current_price, charts, ohlcv_text,
                                     market_context=r2_ctx, progress_cb=progress_cb)
+        self.current_opinions = [{"agent_id": o.agent_id, "decision": o.decision, "confidence": o.confidence} for o in r3]
         await _broadcast_round(3, r3)
 
         # Consensus
@@ -1176,6 +1193,11 @@ class TradingWorldSimulation:
         )
         self.simulation_log.append(result)
         self._persist_latest(result)
+        # ── Clear live state setelah simulasi selesai ─────────────────────
+        self.is_running = False
+        self.current_round = 0
+        self.current_opinions = []
+        # ──────────────────────────────────────────────────────────────────
         print(f"\n[SimWorld] ═══ FINAL: {final} | conf={pct:.1f}% | entry={levels.get('entry')} ═══\n")
         return result
 
