@@ -267,9 +267,12 @@ export default function WorldPage() {
       const API = typeof window !== "undefined" ? window.location.origin : "";
       const res = await fetch(`${API}/sim/latest`);
       if (!res.ok) { setLoading(false); return; }
-      const data: SimResult = await res.json();
-      setResult(data);
-      setLastUpdated(data.timestamp);
+      const data = await res.json();
+      // Guard: only accept valid SimResult (has simulation_id)
+      if (!data?.simulation_id) { setLoading(false); return; }
+      const simData = data as SimResult;
+      setResult(simData);
+      setLastUpdated(simData.timestamp);
       setLoading(false);
 
       // Build nodes from round3
@@ -368,75 +371,82 @@ export default function WorldPage() {
           </p>
         </motion.div>
 
-        {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <div className="text-[10px] font-mono text-white/25 tracking-[0.3em] animate-pulse">
-              LOADING AGENT WORLD...
-            </div>
-          </div>
-        ) : !result ? (
-          <div className="flex flex-col items-center justify-center h-64 gap-4">
-            <div className="w-px h-16 bg-gradient-to-b from-transparent via-white/10 to-transparent" />
-            <p className="text-[10px] font-mono text-white/20 tracking-[0.3em]">AWAITING FIRST SIMULATION</p>
-            <p className="text-[9px] font-mono text-white/10">Start the bot from the admin dashboard to begin</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6">
+        {/* ── Main layout: canvas always visible ── */}
+        <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6">
 
-            {/* Left: neural canvas + consensus */}
-            <div className="space-y-4">
+          {/* Left: neural canvas + consensus */}
+          <div className="space-y-4">
 
-              {/* Neural canvas */}
-              <motion.div
-                initial={{ opacity: 0, scale: 0.98 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0.8 }}
-                className="glass rounded-2xl border border-white/[0.06] overflow-hidden"
-              >
-                <div className="px-4 py-3 border-b border-white/[0.05] flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
-                    <span className="text-[10px] font-mono text-white/40">{result.symbol}</span>
-                    <span className="text-[10px] font-mono text-white/20">·</span>
-                    <span className="text-[10px] font-mono text-white/30">{result.agent_count} agents · {result.token_count} tokens</span>
-                  </div>
-                  <div className="flex items-center gap-4 text-[8px] font-mono text-white/20">
-                    {[["LONG", "#4ade80"], ["SHORT", "#f87171"]].map(([l, c]) => (
-                      <span key={l} className="flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: c }} />{l}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div ref={containerRef} className="relative bg-black/30">
-                  <NeuralCanvas
-                    nodes={nodes}
-                    edges={edges}
-                    selectedId={selectedId}
-                    onSelectAgent={setSelectedId}
-                    width={canvasSize.w}
-                    height={canvasSize.h}
-                  />
-                  <p className="absolute bottom-3 right-3 text-[8px] font-mono text-white/15">
-                    Click a node to inspect
-                  </p>
-                </div>
-
-                {/* Auto round indicator */}
-                <div className="px-4 py-3 border-t border-white/[0.05] flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
-                  <span className="text-[9px] font-mono text-white/40 tracking-wider">
-                    {activeRound === 3 ? "ROUND 3 — FINAL VOTE" : activeRound === 2 ? "ROUND 2 — DELIBERATION" : activeRound === 1 ? "ROUND 1 — INDEPENDENT" : "AWAITING DATA"}
+            {/* Neural canvas — ALWAYS rendered for interactivity */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.8 }}
+              className="glass rounded-2xl border border-white/[0.06] overflow-hidden"
+            >
+              <div className="px-4 py-3 border-b border-white/[0.05] flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className={`w-1.5 h-1.5 rounded-full ${loading ? "bg-[#d4a847] animate-pulse" : "bg-[#4ade80] animate-pulse"}`} />
+                  <span className="text-[10px] font-mono text-white/40">
+                    {loading ? "CONNECTING..." : result ? result.symbol : "AWAITING SIMULATION"}
                   </span>
+                  {result && (
+                    <>
+                      <span className="text-[10px] font-mono text-white/20">·</span>
+                      <span className="text-[10px] font-mono text-white/30">{result.agent_count} agents · {result.token_count} tokens</span>
+                    </>
+                  )}
                 </div>
-              </motion.div>
+                <div className="flex items-center gap-4 text-[8px] font-mono text-white/20">
+                  {[["LONG", "#4ade80"], ["SHORT", "#f87171"]].map(([l, c]) => (
+                    <span key={l} className="flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: c }} />{l}
+                    </span>
+                  ))}
+                </div>
+              </div>
 
-              {/* Consensus result */}
+              <div ref={containerRef} className="relative bg-black/30">
+                <NeuralCanvas
+                  nodes={nodes}
+                  edges={edges}
+                  selectedId={selectedId}
+                  onSelectAgent={setSelectedId}
+                  width={canvasSize.w}
+                  height={canvasSize.h}
+                />
+                {/* No-data overlay — canvas still clickable beneath */}
+                {!result && !loading && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <p className="text-[10px] font-mono text-white/20 tracking-[0.3em]">AWAITING FIRST SIMULATION</p>
+                    <p className="text-[9px] font-mono text-white/10 mt-1">Start the bot to begin · nodes will light up live</p>
+                  </div>
+                )}
+                <p className="absolute bottom-3 right-3 text-[8px] font-mono text-white/15 pointer-events-none">
+                  Click a node to inspect
+                </p>
+              </div>
+
+              {/* Round indicator */}
+              <div className="px-4 py-3 border-t border-white/[0.05] flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
+                <span className="text-[9px] font-mono text-white/40 tracking-wider">
+                  {loading
+                    ? "LOADING..."
+                    : activeRound === 3 ? "ROUND 3 — FINAL VOTE"
+                    : activeRound === 2 ? "ROUND 2 — DELIBERATION"
+                    : activeRound === 1 ? "ROUND 1 — INDEPENDENT"
+                    : "20 AGENTS IDLE · WAITING FOR BOT"}
+                </span>
+              </div>
+            </motion.div>
+
+            {/* Consensus result — only when data exists */}
+            {result ? (
               <motion.div
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7, delay: 0.15 }}
+                transition={{ duration: 0.7, delay: 0.1 }}
                 className="glass-gold rounded-2xl border border-[#d4a847]/15 p-5"
               >
                 <div className="flex items-start gap-6">
@@ -483,72 +493,87 @@ export default function WorldPage() {
                   </div>
                 )}
               </motion.div>
-            </div>
+            ) : (
+              /* Placeholder when no data */
+              <div className="glass rounded-2xl border border-white/[0.04] p-5 text-center">
+                <p className="text-[9px] font-mono text-white/15 tracking-[0.2em]">CONSENSUS PANEL</p>
+                <p className="text-[8px] font-mono text-white/10 mt-1">Final decision will appear here after first simulation</p>
+              </div>
+            )}
+          </div>
 
-            {/* Right: agent inspector + opinion feed */}
-            <div className="space-y-4">
+          {/* Right: agent inspector + opinion feed */}
+          <div className="space-y-4">
 
-              {/* Selected agent inspector */}
-              <AnimatePresence mode="wait">
-                {selectedAgent ? (
-                  <motion.div key={selectedAgent.id} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
-                    className="glass-gold rounded-2xl border border-[#d4a847]/20 p-4"
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <div className="text-[9px] font-mono text-[#d4a847]/50 tracking-[0.2em] uppercase mb-1">Agent Inspector</div>
-                        <div className="text-sm font-mono font-bold text-white">{selectedAgent.name}</div>
-                        <div className="text-[9px] font-mono text-white/30 mt-0.5">{selectedAgent.archetype}</div>
-                      </div>
-                      <button onClick={() => setSelectedId(null)} className="text-[9px] font-mono text-white/20 hover:text-white/50 transition-colors">CLOSE</button>
+            {/* Selected agent inspector */}
+            <AnimatePresence mode="wait">
+              {selectedAgent ? (
+                <motion.div key={selectedAgent.id} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+                  className="glass-gold rounded-2xl border border-[#d4a847]/20 p-4"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <div className="text-[9px] font-mono text-[#d4a847]/50 tracking-[0.2em] uppercase mb-1">Agent Inspector</div>
+                      <div className="text-sm font-mono font-bold text-white">{selectedAgent.name}</div>
+                      <div className="text-[9px] font-mono text-white/30 mt-0.5">{selectedAgent.archetype}</div>
                     </div>
-                    <div className="text-[9px] font-mono text-white/20 mb-2">Influence weight: {selectedAgent.weight}×</div>
+                    <button onClick={() => setSelectedId(null)} className="text-[9px] font-mono text-white/20 hover:text-white/50 transition-colors">CLOSE</button>
+                  </div>
+                  <div className="text-[9px] font-mono text-white/20 mb-2">Influence weight: {selectedAgent.weight}×</div>
 
-                    {/* Per-round opinions */}
-                    <div className="space-y-2">
-                      {([1, 2, 3] as const).map((rn) => {
-                        const op = getOpinion(selectedAgent.id, rn);
-                        const changed = rn > 1 && getOpinion(selectedAgent.id, rn - 1 as 1 | 2)?.decision !== op?.decision;
-                        const l = op?.decision === "LONG", s = op?.decision === "SHORT";
-                        return (
-                          <div key={rn} className="flex items-start gap-3 py-2 border-t border-white/[0.05]">
-                            <span className="text-[8px] font-mono text-white/20 w-12 flex-shrink-0 pt-0.5">R{rn}</span>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className={`text-[9px] font-mono font-bold ${l ? "text-[#4ade80]" : s ? "text-[#f87171]" : "text-white/25"}`}>
-                                  {op?.decision || "—"}
-                                </span>
-                                {changed && <span className="text-[8px] font-mono text-[#c4b5fd]">CHANGED</span>}
-                                {op && <span className="text-[8px] font-mono text-white/20">{op.confidence}%</span>}
-                              </div>
-                              {op?.reason && <p className="text-[9px] text-white/30 italic leading-relaxed line-clamp-2">{op.reason}</p>}
+                  {/* Per-round opinions */}
+                  <div className="space-y-2">
+                    {([1, 2, 3] as const).map((rn) => {
+                      const op = getOpinion(selectedAgent.id, rn);
+                      const changed = rn > 1 && getOpinion(selectedAgent.id, rn - 1 as 1 | 2)?.decision !== op?.decision;
+                      const l = op?.decision === "LONG", s = op?.decision === "SHORT";
+                      return (
+                        <div key={rn} className="flex items-start gap-3 py-2 border-t border-white/[0.05]">
+                          <span className="text-[8px] font-mono text-white/20 w-12 flex-shrink-0 pt-0.5">R{rn}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-[9px] font-mono font-bold ${l ? "text-[#4ade80]" : s ? "text-[#f87171]" : "text-white/25"}`}>
+                                {op?.decision || "—"}
+                              </span>
+                              {changed && <span className="text-[8px] font-mono text-[#c4b5fd]">CHANGED</span>}
+                              {op && <span className="text-[8px] font-mono text-white/20">{op.confidence}%</span>}
                             </div>
+                            {op?.reason && <p className="text-[9px] text-white/30 italic leading-relaxed line-clamp-2">{op.reason}</p>}
+                            {!op && <p className="text-[9px] text-white/15 italic">No data yet for this round</p>}
                           </div>
-                        );
-                      })}
-                    </div>
-                  </motion.div>
-                ) : (
-                  <motion.div key="hint" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                    className="glass rounded-2xl border border-white/[0.05] p-4 text-center"
-                  >
-                    <p className="text-[9px] font-mono text-white/15 tracking-[0.2em]">CLICK A NODE TO INSPECT</p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              ) : (
+                <motion.div key="hint" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  className="glass rounded-2xl border border-white/[0.05] p-4 text-center"
+                >
+                  <p className="text-[9px] font-mono text-white/15 tracking-[0.2em]">CLICK A NODE TO INSPECT</p>
+                  <p className="text-[8px] font-mono text-white/10 mt-1">Each dot = 1 AI trader</p>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-              {/* Opinion feed for current round */}
-              <div className="glass rounded-2xl border border-white/[0.05] overflow-hidden">
-                <div className="px-4 py-3 border-b border-white/[0.05]">
-                  <span className="text-[9px] font-mono text-white/30 tracking-wider">
-                    {activeRound === 3 ? "ROUND 3 — FINAL VOTE" : activeRound === 2 ? "ROUND 2 — DELIBERATION" : "ROUND 1 — INDEPENDENT"}
-                  </span>
-                </div>
-                <div className="overflow-y-auto" style={{ maxHeight: 480 }}>
+            {/* Opinion feed */}
+            <div className="glass rounded-2xl border border-white/[0.05] overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/[0.05]">
+                <span className="text-[9px] font-mono text-white/30 tracking-wider">
+                  {activeRound === 3 ? "ROUND 3 — FINAL VOTE" : activeRound === 2 ? "ROUND 2 — DELIBERATION" : activeRound === 1 ? "ROUND 1 — INDEPENDENT" : "OPINION FEED"}
+                </span>
+              </div>
+              <div className="overflow-y-auto" style={{ maxHeight: 480 }}>
+                {roundOpinions.length === 0 ? (
+                  <div className="px-4 py-8 text-center">
+                    <p className="text-[9px] font-mono text-white/15 tracking-[0.2em]">NO OPINIONS YET</p>
+                    <p className="text-[8px] font-mono text-white/10 mt-1">Waiting for bot to run a simulation</p>
+                  </div>
+                ) : (
                   <AnimatePresence mode="wait">
                     <motion.div key={activeRound} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="divide-y divide-white/[0.04]">
                       {roundOpinions.map((op, i) => {
-                        const prevOp = activeRound > 1
+                        const prevOp = result && activeRound > 1
                           ? (activeRound === 2 ? result.round1_opinions : result.round2_opinions)?.find((o) => o.agent_id === op.agent_id)
                           : undefined;
                         const changed = prevOp && prevOp.decision !== op.decision;
@@ -585,11 +610,11 @@ export default function WorldPage() {
                       })}
                     </motion.div>
                   </AnimatePresence>
-                </div>
+                )}
               </div>
             </div>
           </div>
-        )}
+        </div>
       </main>
     </div>
   );
