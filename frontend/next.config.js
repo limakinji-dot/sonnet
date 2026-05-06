@@ -19,6 +19,15 @@ const nextConfig = {
         source: '/api/:path*',
         destination: 'https://web-production-e78a1.up.railway.app/api/:path*',
       },
+      // FIX: tambahkan /sim dan /market agar ter-proxy ke backend
+      {
+        source: '/sim/:path*',
+        destination: 'https://web-production-e78a1.up.railway.app/sim/:path*',
+      },
+      {
+        source: '/market/:path*',
+        destination: 'https://web-production-e78a1.up.railway.app/market/:path*',
+      },
     ];
   },
 
