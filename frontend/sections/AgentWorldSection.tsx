@@ -242,6 +242,27 @@ export default function AgentWorldSection() {
     setEdges(newEdges);
   };
 
+  // ── Fetch current in-progress simulation (fix: late joiner / mobile) ───────
+  const fetchCurrent = async () => {
+    try {
+      const res = await fetch("/sim/current");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data?.is_running) return;
+      const ops: { agent_id: number; decision: string; confidence: number }[] = data.agent_opinions || [];
+      setNodes(Array.from({ length: AGENT_COUNT }, (_, i) => {
+        const op = ops.find((o) => o.agent_id === i + 1);
+        return { id: i + 1, decision: op ? (op.decision as LiveNode["decision"]) : "IDLE", confidence: op?.confidence || 0, pulsePhase: (i * 0.37) % (Math.PI * 2) };
+      }));
+      const longOps  = ops.filter((o) => o.decision === "LONG");
+      const shortOps = ops.filter((o) => o.decision === "SHORT");
+      const newEdges: { from: number; to: number; decision: string }[] = [];
+      for (let i = 0; i < longOps.length; i++) for (let j = i + 1; j < longOps.length; j++) newEdges.push({ from: longOps[i].agent_id, to: longOps[j].agent_id, decision: "LONG" });
+      for (let i = 0; i < shortOps.length; i++) for (let j = i + 1; j < shortOps.length; j++) newEdges.push({ from: shortOps[i].agent_id, to: shortOps[j].agent_id, decision: "SHORT" });
+      setEdges(newEdges);
+    } catch {}
+  };
+
   const fetchLatest = async () => {
     try {
       const res = await fetch("/sim/latest");
@@ -260,6 +281,8 @@ export default function AgentWorldSection() {
     const connect = () => {
       try {
         const ws = new WebSocket(wsUrl); wsRef.current = ws;
+        // ── Sync state saat pertama konek (fix: late joiner / mobile) ──────
+        ws.onopen = () => { fetchCurrent(); };
         ws.onmessage = (e) => {
           try {
             const { event, data } = JSON.parse(e.data);
