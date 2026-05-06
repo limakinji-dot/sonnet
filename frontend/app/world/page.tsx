@@ -266,10 +266,11 @@ export default function WorldPage() {
 
   // ── WebSocket realtime ────────────────────────────────────────────────────
   useEffect(() => {
-    // Derive WS URL: gunakan env var atau fallback dari API rewrite base
-    const wsBase = process.env.NEXT_PUBLIC_WS_URL
-      || "wss://web-production-e78a1.up.railway.app";
-    const wsUrl = `${wsBase}/sim/ws`;
+    // WS harus langsung ke backend — Next.js rewrites /sim/* tidak support WebSocket upgrade.
+    // NEXT_PUBLIC_BACKEND_URL harus set di Railway env (tanpa trailing slash).
+    // Fallback ke hardcoded Railway URL jika env tidak di-set.
+    const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "https://web-production-e78a1.up.railway.app";
+    const wsUrl = BACKEND.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://") + "/sim/ws";
 
     const connect = () => {
       try {
