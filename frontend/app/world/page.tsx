@@ -237,8 +237,6 @@ const timeAgo = (ts: number) => {
 // World Page
 // ─────────────────────────────────────────────────────────────────────────────
 
-type RoundView = "r3" | "r2" | "r1";
-
 export default function WorldPage() {
   const [result, setResult] = useState<SimResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -248,7 +246,6 @@ export default function WorldPage() {
   );
   const [edges, setEdges] = useState<EdgeState[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [roundView, setRoundView] = useState<RoundView>("r3");
   const [canvasSize, setCanvasSize] = useState({ w: 700, h: 460 });
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -306,10 +303,13 @@ export default function WorldPage() {
   const getOpinion = (agentId: number, round: number) =>
     result ? [result.round1_opinions, result.round2_opinions, result.round3_opinions][round - 1]?.find((o) => o.agent_id === agentId) : null;
 
+  // Auto-detect current round from backend data (no manual tab needed)
+  const activeRound = result
+    ? (result.round3_opinions?.length ? 3 : result.round2_opinions?.length ? 2 : 1)
+    : 0;
+
   const roundOpinions: AgentOpinion[] = result
-    ? (roundView === "r1" ? result.round1_opinions
-    : roundView === "r2" ? result.round2_opinions
-    : result.round3_opinions) ?? []
+    ? (activeRound === 3 ? result.round3_opinions : activeRound === 2 ? result.round2_opinions : result.round1_opinions) ?? []
     : [];
 
   const vote = result?.vote_breakdown;
@@ -423,16 +423,12 @@ export default function WorldPage() {
                   </p>
                 </div>
 
-                {/* Round tabs on canvas */}
-                <div className="px-4 py-3 border-t border-white/[0.05] flex items-center gap-1">
-                  {(["r1", "r2", "r3"] as RoundView[]).map((r) => (
-                    <button key={r} onClick={() => setRoundView(r)}
-                      className={`px-3 py-1.5 rounded-lg text-[9px] font-mono tracking-wider transition-colors ${
-                        roundView === r ? "bg-white/[0.08] text-white/70 border border-white/10" : "text-white/25 hover:text-white/50"
-                      }`}>
-                      {r === "r1" ? "ROUND 1" : r === "r2" ? "ROUND 2" : "ROUND 3 (FINAL)"}
-                    </button>
-                  ))}
+                {/* Auto round indicator */}
+                <div className="px-4 py-3 border-t border-white/[0.05] flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
+                  <span className="text-[9px] font-mono text-white/40 tracking-wider">
+                    {activeRound === 3 ? "ROUND 3 — FINAL VOTE" : activeRound === 2 ? "ROUND 2 — DELIBERATION" : activeRound === 1 ? "ROUND 1 — INDEPENDENT" : "AWAITING DATA"}
+                  </span>
                 </div>
               </motion.div>
 
@@ -545,15 +541,15 @@ export default function WorldPage() {
               <div className="glass rounded-2xl border border-white/[0.05] overflow-hidden">
                 <div className="px-4 py-3 border-b border-white/[0.05]">
                   <span className="text-[9px] font-mono text-white/30 tracking-wider">
-                    {roundView === "r1" ? "ROUND 1 — INDEPENDENT" : roundView === "r2" ? "ROUND 2 — DELIBERATION" : "ROUND 3 — FINAL VOTE"}
+                    {activeRound === 3 ? "ROUND 3 — FINAL VOTE" : activeRound === 2 ? "ROUND 2 — DELIBERATION" : "ROUND 1 — INDEPENDENT"}
                   </span>
                 </div>
                 <div className="overflow-y-auto" style={{ maxHeight: 480 }}>
                   <AnimatePresence mode="wait">
-                    <motion.div key={roundView} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="divide-y divide-white/[0.04]">
+                    <motion.div key={activeRound} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="divide-y divide-white/[0.04]">
                       {roundOpinions.map((op, i) => {
-                        const prevOp = roundView !== "r1"
-                          ? (roundView === "r2" ? result.round1_opinions : result.round2_opinions)?.find((o) => o.agent_id === op.agent_id)
+                        const prevOp = activeRound > 1
+                          ? (activeRound === 2 ? result.round1_opinions : result.round2_opinions)?.find((o) => o.agent_id === op.agent_id)
                           : undefined;
                         const changed = prevOp && prevOp.decision !== op.decision;
                         const l = op.decision === "LONG", s = op.decision === "SHORT";
