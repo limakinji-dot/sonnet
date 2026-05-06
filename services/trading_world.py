@@ -354,6 +354,90 @@ async def _hapus_chat(client: httpx.AsyncClient, token: str, chat_id: str):
         pass
 
 
+async def _upload_one_chart(
+    client: httpx.AsyncClient,
+    token: str,
+    image_b64: str,
+    filename: str,
+) -> Optional[dict]:
+    """
+    Upload satu chart ke Qwen OSS via 2-step:
+      1. POST /api/v2/files/getstsToken → dapat pre-signed URL
+      2. PUT image ke URL tersebut
+    Return file info dict yang siap dimasukkan ke 'files' array message.
+    """
+    try:
+        image_bytes = base64.b64decode(image_b64)
+        filesize    = len(image_bytes)
+
+        # Step 1 — minta STS / pre-signed URL
+        sts_resp = await client.post(
+            f"{BASE_URL}/api/v2/files/getstsToken",
+            json={"filename": filename, "filesize": filesize, "filetype": "image"},
+            headers=_make_headers(token),
+            timeout=30,
+        )
+        if sts_resp.status_code != 200:
+            logger.warning(f"getstsToken failed {sts_resp.status_code} for {filename}")
+            return None
+
+        sts = sts_resp.json().get("data", {})
+        file_url = sts.get("file_url")
+        file_id  = sts.get("file_id")
+        if not file_url or not file_id:
+            logger.warning(f"getstsToken: missing file_url/file_id for {filename}")
+            return None
+
+        # Step 2 — PUT ke OSS pakai pre-signed URL (tidak perlu Authorization header)
+        put_resp = await client.put(
+            file_url,
+            content=image_bytes,
+            headers={"Content-Type": "image/png"},
+            timeout=60,
+        )
+        if put_resp.status_code != 200:
+            logger.warning(f"OSS PUT failed {put_resp.status_code} for {filename}")
+            return None
+
+        print(f"  [World 📸 upload] {filename} → {file_id[:8]}... OK")
+        return {
+            "type":       "image",
+            "file":       {
+                "id":       file_id,
+                "filename": filename,
+                "meta":     {"name": filename, "size": filesize, "content_type": "image/png"},
+                "data":     {},
+            },
+            "file_type":  "image/png",
+            "file_class": "vision",
+            "id":         file_id,
+            "name":       filename,
+            "size":       filesize,
+            "status":     "uploaded",
+            "url":        file_url,
+            "showType":   "image",
+        }
+    except Exception as e:
+        logger.warning(f"_upload_one_chart error ({filename}): {e}")
+        return None
+
+
+async def _upload_charts(
+    client: httpx.AsyncClient,
+    token: str,
+    charts: Dict[str, str],
+) -> List[dict]:
+    """Upload semua chart paralel, return list file info (hanya yang berhasil)."""
+    if not charts:
+        return []
+    tasks = [
+        _upload_one_chart(client, token, b64, f"chart_{tf}.png")
+        for tf, b64 in charts.items()
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return [r for r in results if isinstance(r, dict)]
+
+
 async def _kirim_pesan(
     client: httpx.AsyncClient,
     token: str,
@@ -365,19 +449,23 @@ async def _kirim_pesan(
 ) -> Optional[str]:
     """
     Kirim pesan dengan streaming.
-    Support image input — content dikirim sebagai array (sama persis dengan gateway):
-      [{type: image_url, image_url: {url: data:image/png;base64,...}}, ..., {type: text, text: ...}]
-
-    System prompt digabung sebagai prefix di user message
-    (reverse API tidak punya dedicated system role).
+    Kalau ada charts (base64), upload dulu ke Qwen OSS lalu sertakan
+    sebagai 'files' array — ini cara yang benar menurut reverse-engineering
+    dari inspect element chat.qwen.ai.
     """
     fid      = str(uuid.uuid4())
     child_id = str(uuid.uuid4())
     ts       = int(time.time())
 
-    # Gabung system + user text
-    # Kirim sebagai plain string — persis format testt.py yang sudah terbukti work
-    # Reverse API chat.qwen.ai TIDAK support image_url array → stream kosong
+    # Upload charts ke OSS dulu kalau ada
+    uploaded_files: List[dict] = []
+    if charts:
+        uploaded_files = await _upload_charts(client, token, charts)
+        if uploaded_files:
+            print(f"  [World 📸] {len(uploaded_files)}/{len(charts)} chart(s) uploaded OK")
+        else:
+            print(f"  [World ⚠️ ] Chart upload failed — lanjut text-only")
+
     content = f"{system_prompt}\n\n---\n\n{user_content}"
 
     payload = {
@@ -396,7 +484,7 @@ async def _kirim_pesan(
                 "role": "user",
                 "content": content,
                 "user_action": "chat",
-                "files": [],
+                "files": uploaded_files,   # ← hasil upload OSS
                 "timestamp": ts,
                 "models": [model],
                 "chat_type": "t2t",
@@ -837,8 +925,23 @@ class TradingWorldSimulation:
         if not self.tokens:
             raise RuntimeError("No JWT tokens. Set QWEN_TOKEN_1..5")
 
-        # Chart generation dinonaktifkan — reverse API tidak support image_url
+        # Generate candlestick charts (base64) — akan di-upload ke OSS per agent call
+        loop = asyncio.get_event_loop()
         charts: Dict[str, str] = {}
+        if HAS_CHARTS:
+            try:
+                charts = await loop.run_in_executor(
+                    None,
+                    lambda: {
+                        tf: img for tf in ["5m", "15m", "30m", "1h", "4h"]
+                        if (img := _draw_chart(candles_by_tf.get(tf, []), symbol, tf))
+                    }
+                )
+                print(f"[SimWorld] 📊 Charts ready: {list(charts.keys())}")
+            except Exception as e:
+                logger.warning(f"Chart generation error: {e}")
+        else:
+            print("[SimWorld] ⚠️  matplotlib not installed — text-only mode")
 
         # Build OHLCV text
         tf_blocks = []
