@@ -112,6 +112,7 @@ Use when the position is in PROFIT and you want to lock in gains or protect brea
   • For SHORT: new_sl must be BELOW the current SL but ABOVE current price
 - Do NOT use SL+ if the position is still at a loss — use HOLD or CLOSE instead.
 - Do NOT move SL+ so tight that normal volatility would immediately stop it out.
+- Do NOT SL to entry because there's trading fee so do not sl entry 
 
 ━━━ TP1 HIT → FORCE SL+ ━━━
 SPECIAL RULE: If ALL of the following are true, you MUST return SL+ (not HOLD):
