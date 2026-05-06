@@ -362,15 +362,71 @@ async def _upload_one_chart(
 ) -> Optional[dict]:
     """
     Upload satu chart ke Qwen OSS via 2-step:
-      1. POST /api/v2/files/getstsToken → dapat pre-signed URL
-      2. PUT image ke URL tersebut
-    Return file info dict yang siap dimasukkan ke 'files' array message.
+      1. POST /api/v2/files/getstsToken → dapat STS credentials
+      2. PUT image ke OSS dengan OSS4-HMAC-SHA256 header signing
     """
+    import hashlib, hmac as _hmac
+    from datetime import datetime, timezone
+
+    def _oss_sign(ak_id, ak_secret, sts_token, method, host, path, region, content_type):
+        """Generate OSS4-HMAC-SHA256 Authorization + related headers."""
+        now          = datetime.now(timezone.utc)
+        date_str     = now.strftime("%Y%m%d")
+        datetime_str = now.strftime("%Y%m%dT%H%M%SZ")
+
+        signed_headers   = "content-type;host;x-oss-content-sha256;x-oss-date;x-oss-security-token"
+        canonical_headers = (
+            f"content-type:{content_type}\n"
+            f"host:{host}\n"
+            f"x-oss-content-sha256:UNSIGNED-PAYLOAD\n"
+            f"x-oss-date:{datetime_str}\n"
+            f"x-oss-security-token:{sts_token}\n"
+        )
+        canonical_request = "\n".join([
+            method.upper(),
+            "/" + path,
+            "",  # empty query string
+            canonical_headers,
+            signed_headers,
+            "UNSIGNED-PAYLOAD",
+        ])
+
+        credential_scope = f"{date_str}/{region}/oss/aliyun_v4_request"
+        string_to_sign   = "\n".join([
+            "OSS4-HMAC-SHA256",
+            datetime_str,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode()).hexdigest(),
+        ])
+
+        def _hmac_sha256(key, msg):
+            k = key if isinstance(key, bytes) else key.encode()
+            return _hmac.new(k, msg.encode(), hashlib.sha256).digest()
+
+        k = _hmac_sha256("aliyun_v4" + ak_secret, date_str)
+        k = _hmac_sha256(k, region)
+        k = _hmac_sha256(k, "oss")
+        k = _hmac_sha256(k, "aliyun_v4_request")
+        signature = _hmac.new(k, string_to_sign.encode(), hashlib.sha256).hexdigest()
+
+        authorization = (
+            f"OSS4-HMAC-SHA256 Credential={ak_id}/{credential_scope},"
+            f"SignedHeaders={signed_headers},"
+            f"Signature={signature}"
+        )
+        return {
+            "Authorization":         authorization,
+            "x-oss-date":            datetime_str,
+            "x-oss-content-sha256":  "UNSIGNED-PAYLOAD",
+            "x-oss-security-token":  sts_token,
+            "Content-Type":          content_type,
+        }
+
     try:
         image_bytes = base64.b64decode(image_b64)
         filesize    = len(image_bytes)
 
-        # Step 1 — minta STS / pre-signed URL
+        # Step 1 — minta STS credentials
         sts_resp = await client.post(
             f"{BASE_URL}/api/v2/files/getstsToken",
             json={"filename": filename, "filesize": filesize, "filetype": "image"},
@@ -381,22 +437,36 @@ async def _upload_one_chart(
             logger.warning(f"getstsToken failed {sts_resp.status_code} for {filename}")
             return None
 
-        sts = sts_resp.json().get("data", {})
-        file_url = sts.get("file_url")
-        file_id  = sts.get("file_id")
-        if not file_url or not file_id:
-            logger.warning(f"getstsToken: missing file_url/file_id for {filename}")
+        sts        = sts_resp.json().get("data", {})
+        ak_id      = sts.get("access_key_id", "")
+        ak_secret  = sts.get("access_key_secret", "")
+        sts_token  = sts.get("security_token", "")
+        file_id    = sts.get("file_id", "")
+        file_path  = sts.get("file_path", "")   # "user_id/file_id_filename.png"
+        bucketname = sts.get("bucketname", "qwen-webui-prod")
+        endpoint   = sts.get("endpoint", "oss-accelerate.aliyuncs.com")
+        region_raw = sts.get("region", "oss-ap-southeast-1")
+
+        if not all([ak_id, ak_secret, sts_token, file_id, file_path]):
+            logger.warning(f"getstsToken: incomplete credentials for {filename}")
             return None
 
-        # Step 2 — PUT ke OSS pakai pre-signed URL (tidak perlu Authorization header)
+        # region di credential scope TIDAK pakai prefix "oss-"
+        region = region_raw.removeprefix("oss-") if region_raw.startswith("oss-") else region_raw
+
+        host       = f"{bucketname}.{endpoint}"
+        put_url    = f"https://{host}/{file_path}"
+        put_headers = _oss_sign(ak_id, ak_secret, sts_token, "PUT", host, file_path, region, "image/png")
+
+        # Step 2 — PUT ke OSS dengan signed headers
         put_resp = await client.put(
-            file_url,
+            put_url,
             content=image_bytes,
-            headers={"Content-Type": "image/png"},
+            headers=put_headers,
             timeout=60,
         )
         if put_resp.status_code != 200:
-            logger.warning(f"OSS PUT failed {put_resp.status_code} for {filename}")
+            logger.warning(f"OSS PUT failed {put_resp.status_code} for {filename}: {put_resp.text[:200]}")
             return None
 
         print(f"  [World 📸 upload] {filename} → {file_id[:8]}... OK")
@@ -414,7 +484,7 @@ async def _upload_one_chart(
             "name":       filename,
             "size":       filesize,
             "status":     "uploaded",
-            "url":        file_url,
+            "url":        put_url,
             "showType":   "image",
         }
     except Exception as e:
