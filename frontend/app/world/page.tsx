@@ -359,7 +359,9 @@ export default function WorldPage() {
   const fetchCurrent = useCallback(async () => {
     try {
       const API = typeof window !== "undefined" ? window.location.origin : "";
-      const res = await fetch(`${API}/sim/current`);
+      const res = await fetch(`${API}/sim/current`, {
+        headers: { "X-API-Key": process.env.NEXT_PUBLIC_API_KEY || "" },
+      });
       if (!res.ok) return;
       const data = await res.json();
       if (!data?.is_running) return;
