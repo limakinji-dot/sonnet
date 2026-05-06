@@ -222,7 +222,7 @@ function NeuralCanvas({ nodes, edges, selectedId, onSelectAgent, width, height }
 // ─────────────────────────────────────────────────────────────────────────────
 
 const fmt = (v: number | null | undefined) => {
-  if (v == null) return "—";
+  if (v == null || isNaN(v)) return "—";
   return v < 1 ? v.toFixed(6) : v < 100 ? v.toFixed(4) : v.toFixed(2);
 };
 
@@ -453,7 +453,7 @@ export default function WorldPage() {
                       {result.final_decision}
                     </div>
                     <div className="text-[9px] font-mono text-white/25">
-                      {fmt(result.current_price)} · {result.consensus_confidence.toFixed(1)}% confidence
+                      {fmt(result.current_price)} · {(result.consensus_confidence ?? 0).toFixed(1)}% confidence
                     </div>
                   </div>
 
