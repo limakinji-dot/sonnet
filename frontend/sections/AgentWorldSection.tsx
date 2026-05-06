@@ -245,7 +245,9 @@ export default function AgentWorldSection() {
   // ── Fetch current in-progress simulation (fix: late joiner / mobile) ───────
   const fetchCurrent = async () => {
     try {
-      const res = await fetch("/sim/current");
+      const res = await fetch("/sim/current", {
+        headers: { "X-API-Key": process.env.NEXT_PUBLIC_API_KEY || "" },
+      });
       if (!res.ok) return;
       const data = await res.json();
       if (!data?.is_running) return;
