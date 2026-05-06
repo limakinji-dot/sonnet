@@ -811,12 +811,12 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
     )
     print(f"{tag} ✅ {decision} conf={op.confidence}% | {op.reason[:60]}")
 
-    # Broadcast realtime ke frontend via WebSocket
+    # Broadcast realtime ke frontend via WebSocket — await langsung agar
+    # pesan terkirim segera saat agent selesai, bukan deferred via create_task
     try:
         ws = _get_ws()
         if ws:
-            import asyncio as _asyncio
-            _asyncio.create_task(ws.broadcast("agent_update", {
+            await ws.broadcast("agent_update", {
                 "agent_id":   op.agent_id,
                 "agent_name": op.agent_name,
                 "round_num":  op.round_num,
@@ -826,7 +826,7 @@ If there is NO clear void/imbalance setup → return "NO TRADE". Do NOT force a 
                 "entry":      op.entry,
                 "tp1":        op.tp1,
                 "sl":         op.sl,
-            }))
+            })
     except Exception:
         pass
 
