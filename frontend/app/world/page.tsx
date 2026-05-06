@@ -306,10 +306,10 @@ export default function WorldPage() {
   const getOpinion = (agentId: number, round: number) =>
     result ? [result.round1_opinions, result.round2_opinions, result.round3_opinions][round - 1]?.find((o) => o.agent_id === agentId) : null;
 
-  const roundOpinions = result
-    ? roundView === "r1" ? result.round1_opinions
+  const roundOpinions: AgentOpinion[] = result
+    ? (roundView === "r1" ? result.round1_opinions
     : roundView === "r2" ? result.round2_opinions
-    : result.round3_opinions
+    : result.round3_opinions) ?? []
     : [];
 
   const vote = result?.vote_breakdown;
@@ -471,7 +471,7 @@ export default function WorldPage() {
 
                 {vote && (
                   <div className="mt-4 pt-4 border-t border-white/[0.05] space-y-2">
-                    {Object.entries(vote.pct).map(([dec, pct]) => {
+                    {Object.entries(vote.pct ?? {}).map(([dec, pct]) => {
                       const l = dec === "LONG", s = dec === "SHORT";
                       return (
                         <div key={dec} className="flex items-center gap-3">
@@ -553,7 +553,7 @@ export default function WorldPage() {
                     <motion.div key={roundView} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="divide-y divide-white/[0.04]">
                       {roundOpinions.map((op, i) => {
                         const prevOp = roundView !== "r1"
-                          ? (roundView === "r2" ? result.round1_opinions : result.round2_opinions).find((o) => o.agent_id === op.agent_id)
+                          ? (roundView === "r2" ? result.round1_opinions : result.round2_opinions)?.find((o) => o.agent_id === op.agent_id)
                           : undefined;
                         const changed = prevOp && prevOp.decision !== op.decision;
                         const l = op.decision === "LONG", s = op.decision === "SHORT";
