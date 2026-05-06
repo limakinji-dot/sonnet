@@ -294,25 +294,18 @@ class ConsensusResult:
 # ---------------------------------------------------------------------------
 
 def _make_headers(token: str, chat_id: str = "") -> dict:
-    import datetime as _dt
-    # timezone header harus sama format dengan browser: "Tue May 06 2026 16:06:57 GMT+0700"
-    # Kita kirim UTC offset +0000 (server Railway biasanya UTC)
-    now_utc = _dt.datetime.now(_dt.timezone.utc)
-    tz_str  = now_utc.strftime("%a %b %d %Y %H:%M:%S GMT+0000")
-
     h = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "application/json",
+        "Accept-Language": "zh-CN,zh;q=0.9",
         "Content-Type": "application/json",
         "source": "web",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
         "Origin": "https://chat.qwen.ai",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "Version": "0.2.45",   # fix: was "0.2.7" — browser sends "0.2.45"
+        "Version": "0.2.7",
         "bx-v": "2.5.36",
-        "timezone": tz_str,    # fix: wajib ada di getstsToken request
         "Authorization": f"Bearer {token}",
         "X-Request-Id": str(uuid.uuid4()),
     }
@@ -366,7 +359,6 @@ async def _upload_one_chart(
     token: str,
     image_b64: str,
     filename: str,
-    chat_id: str = "",          # fix: perlu untuk Referer header di getstsToken
 ) -> Optional[dict]:
     """
     Upload satu chart ke Qwen OSS via 2-step:
@@ -434,18 +426,15 @@ async def _upload_one_chart(
         image_bytes = base64.b64decode(image_b64)
         filesize    = len(image_bytes)
 
-        # Step 1 — minta STS credentials (wajib pakai chat_id agar Referer header ada)
+        # Step 1 — minta STS credentials
         sts_resp = await client.post(
             f"{BASE_URL}/api/v2/files/getstsToken",
             json={"filename": filename, "filesize": filesize, "filetype": "image"},
-            headers=_make_headers(token, chat_id),   # fix: dulu _make_headers(token) — tanpa Referer!
+            headers=_make_headers(token),
             timeout=30,
         )
         if sts_resp.status_code != 200:
-            logger.warning(
-                f"getstsToken failed HTTP {sts_resp.status_code} for {filename} — "
-                f"body: {sts_resp.text[:300]}"
-            )
+            logger.warning(f"getstsToken failed {sts_resp.status_code} for {filename}")
             return None
 
         sts        = sts_resp.json().get("data", {})
@@ -477,10 +466,7 @@ async def _upload_one_chart(
             timeout=60,
         )
         if put_resp.status_code != 200:
-            logger.warning(
-                f"OSS PUT failed HTTP {put_resp.status_code} for {filename}: "
-                f"{put_resp.text[:300]}"
-            )
+            logger.warning(f"OSS PUT failed {put_resp.status_code} for {filename}: {put_resp.text[:200]}")
             return None
 
         print(f"  [World 📸 upload] {filename} → {file_id[:8]}... OK")
@@ -510,13 +496,12 @@ async def _upload_charts(
     client: httpx.AsyncClient,
     token: str,
     charts: Dict[str, str],
-    chat_id: str = "",           # fix: diteruskan ke _upload_one_chart untuk Referer
 ) -> List[dict]:
     """Upload semua chart paralel, return list file info (hanya yang berhasil)."""
     if not charts:
         return []
     tasks = [
-        _upload_one_chart(client, token, b64, f"chart_{tf}.png", chat_id=chat_id)
+        _upload_one_chart(client, token, b64, f"chart_{tf}.png")
         for tf, b64 in charts.items()
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -542,14 +527,15 @@ async def _kirim_pesan(
     child_id = str(uuid.uuid4())
     ts       = int(time.time())
 
+    # [IMAGE UPLOAD DINONAKTIFKAN] — text-only mode
     # Upload charts ke OSS dulu kalau ada
     uploaded_files: List[dict] = []
-    if charts:
-        uploaded_files = await _upload_charts(client, token, charts, chat_id=chat_id)  # fix: teruskan chat_id
-        if uploaded_files:
-            print(f"  [World 📸] {len(uploaded_files)}/{len(charts)} chart(s) uploaded OK")
-        else:
-            print(f"  [World ⚠️ ] Chart upload failed — lanjut text-only")
+    # if charts:
+    #     uploaded_files = await _upload_charts(client, token, charts)
+    #     if uploaded_files:
+    #         print(f"  [World 📸] {len(uploaded_files)}/{len(charts)} chart(s) uploaded OK")
+    #     else:
+    #         print(f"  [World ⚠️ ] Chart upload failed — lanjut text-only")
 
     content = f"{system_prompt}\n\n---\n\n{user_content}"
 
@@ -1010,23 +996,25 @@ class TradingWorldSimulation:
         if not self.tokens:
             raise RuntimeError("No JWT tokens. Set QWEN_TOKEN_1..5")
 
+        # [IMAGE UPLOAD DINONAKTIFKAN] — text-only mode
         # Generate candlestick charts (base64) — akan di-upload ke OSS per agent call
-        loop = asyncio.get_event_loop()
+        # loop = asyncio.get_event_loop()
         charts: Dict[str, str] = {}
-        if HAS_CHARTS:
-            try:
-                charts = await loop.run_in_executor(
-                    None,
-                    lambda: {
-                        tf: img for tf in ["5m", "15m", "30m", "1h", "4h"]
-                        if (img := _draw_chart(candles_by_tf.get(tf, []), symbol, tf))
-                    }
-                )
-                print(f"[SimWorld] 📊 Charts ready: {list(charts.keys())}")
-            except Exception as e:
-                logger.warning(f"Chart generation error: {e}")
-        else:
-            print("[SimWorld] ⚠️  matplotlib not installed — text-only mode")
+        # if HAS_CHARTS:
+        #     try:
+        #         charts = await loop.run_in_executor(
+        #             None,
+        #             lambda: {
+        #                 tf: img for tf in ["5m", "15m", "30m", "1h", "4h"]
+        #                 if (img := _draw_chart(candles_by_tf.get(tf, []), symbol, tf))
+        #             }
+        #         )
+        #         print(f"[SimWorld] 📊 Charts ready: {list(charts.keys())}")
+        #     except Exception as e:
+        #         logger.warning(f"Chart generation error: {e}")
+        # else:
+        #     print("[SimWorld] ⚠️  matplotlib not installed — text-only mode")
+        print("[SimWorld] 📝 Text-only mode (image upload dinonaktifkan)")
 
         # Build OHLCV text
         tf_blocks = []
