@@ -102,7 +102,8 @@ function stepPhysics(bodies: PhysBody[], nodes: NodeState[], mouse: { x: number;
     fx[i] += (bi.baseX - bi.x) * sk; fy[i] += (bi.baseY - bi.y) * sk;
     const cmx = bi.x - mouse.x, cmy = bi.y - mouse.y;
     const cdist = Math.sqrt(cmx * cmx + cmy * cmy) + 0.1;
-    if (cdist < 110) { const f = Math.pow((110 - cdist) / 110, 2) * 1.8; fx[i] += (cmx / cdist) * f; fy[i] += (cmy / cdist) * f; }
+    // Skip repulsion for the hovered node so it stays still and can be clicked
+    if (cdist < 110 && hoveredId !== i + 1) { const f = Math.pow((110 - cdist) / 110, 2) * 1.8; fx[i] += (cmx / cdist) * f; fy[i] += (cmy / cdist) * f; }
     if (hoveredId !== null && hoveredId !== i + 1) {
       const bh = bodies[hoveredId - 1]; const nh = nodes[hoveredId - 1];
       if (bh && nh && ni.decision !== "IDLE" && nh.decision !== "IDLE") {
@@ -556,6 +557,33 @@ export default function WorldPage() {
                     <button onClick={() => setSelectedId(null)} className="text-[9px] font-mono text-white/20 hover:text-white/50 transition-colors">CLOSE</button>
                   </div>
                   <div className="text-[9px] font-mono text-white/20 mb-2">Influence weight: {selectedAgent.weight}×</div>
+                  {!result && liveRound > 0 ? (
+                    // Live simulation in progress — show current node state
+                    <div className="py-2 border-t border-white/[0.05]">
+                      {(() => {
+                        const liveNode = nodes.find(n => n.id === selectedAgent.id);
+                        const l = liveNode?.decision === "LONG", s = liveNode?.decision === "SHORT";
+                        return (
+                          <div className="flex items-center gap-3">
+                            <span className="text-[8px] font-mono text-white/20 w-12 flex-shrink-0">R{liveRound}</span>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className={`text-[9px] font-mono font-bold ${l ? "text-[#4ade80]" : s ? "text-[#f87171]" : "text-white/25"}`}>
+                                  {liveNode?.decision || "THINKING..."}
+                                </span>
+                                {liveNode && liveNode.decision !== "IDLE" && (
+                                  <span className="text-[8px] font-mono text-white/20">{liveNode.confidence}%</span>
+                                )}
+                              </div>
+                              <p className="text-[9px] text-white/20 italic">Simulation round {liveRound} in progress...</p>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ) : !result ? (
+                    <p className="text-[9px] text-white/15 italic py-2 border-t border-white/[0.05]">Awaiting simulation data...</p>
+                  ) : (
                   <div className="space-y-2">
                     {([1, 2, 3] as const).map((rn) => {
                       const op = getOpinion(selectedAgent.id, rn);
@@ -571,12 +599,13 @@ export default function WorldPage() {
                               {op && <span className="text-[8px] font-mono text-white/20">{op.confidence}%</span>}
                             </div>
                             {op?.reason && <p className="text-[9px] text-white/30 italic leading-relaxed line-clamp-2">{op.reason}</p>}
-                            {!op && <p className="text-[9px] text-white/15 italic">No data yet</p>}
+                            {!op && <p className="text-[9px] text-white/15 italic">No data for this round</p>}
                           </div>
                         </div>
                       );
                     })}
                   </div>
+                  )}
                 </motion.div>
               ) : (
                 <motion.div key="hint" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
