@@ -153,48 +153,97 @@ export default function AgentWorldSection() {
     }))
   );
   const [edges, setEdges] = useState<{ from: number; to: number; decision: string }[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
 
-  // Poll /sim/latest every 10s
+  // Helper: apply opinions ke nodes & edges
+  const applyOpinions = (opinions: LatestSim["round3_opinions"]) => {
+    const newNodes: LiveNode[] = Array.from({ length: AGENT_COUNT }, (_, i) => {
+      const op = opinions?.find((o) => o.agent_id === i + 1);
+      return {
+        id: i + 1,
+        decision: (op?.decision as LiveNode["decision"]) || "IDLE",
+        confidence: op?.confidence || 0,
+        pulsePhase: (i * 0.37) % (Math.PI * 2),
+      };
+    });
+    setNodes(newNodes);
+    const longOps = opinions?.filter((o) => o.decision === "LONG") || [];
+    const shortOps = opinions?.filter((o) => o.decision === "SHORT") || [];
+    const newEdges: { from: number; to: number; decision: string }[] = [];
+    for (let i = 0; i < longOps.length; i++)
+      for (let j = i + 1; j < longOps.length; j++)
+        newEdges.push({ from: longOps[i].agent_id, to: longOps[j].agent_id, decision: "LONG" });
+    for (let i = 0; i < shortOps.length; i++)
+      for (let j = i + 1; j < shortOps.length; j++)
+        newEdges.push({ from: shortOps[i].agent_id, to: shortOps[j].agent_id, decision: "SHORT" });
+    setEdges(newEdges);
+  };
+
+  // Fetch hasil terbaru
+  const fetchLatest = async () => {
+    try {
+      const res = await fetch("/sim/latest");
+      if (!res.ok) return;
+      const raw = await res.json();
+      if (!raw?.simulation_id) return;
+      const data: LatestSim = raw;
+      setLatest(data);
+      applyOpinions(data.round3_opinions);
+    } catch {}
+  };
+
+  // ── WebSocket realtime ────────────────────────────────────────────────────
+  // WebSocket harus langsung ke backend — Next.js rewrites tidak support WS
   useEffect(() => {
-    const fetch_ = async () => {
+    const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "https://web-production-e78a1.up.railway.app";
+    const wsUrl = BACKEND.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://") + "/sim/ws";
+
+    const connect = () => {
       try {
-        const res = await fetch("/sim/latest");
-        if (!res.ok) return;
-        const raw = await res.json();
-        // Guard: only accept valid SimResult
-        if (!raw?.simulation_id) return;
-        const data: LatestSim = raw;
-        setLatest(data);
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
-        // Update nodes
-        const newNodes: LiveNode[] = Array.from({ length: AGENT_COUNT }, (_, i) => {
-          const op = data.round3_opinions?.find((o) => o.agent_id === i + 1);
-          return {
-            id: i + 1,
-            decision: (op?.decision as LiveNode["decision"]) || "IDLE",
-            confidence: op?.confidence || 0,
-            pulsePhase: (i * 0.37) % (Math.PI * 2),
-          };
-        });
-        setNodes(newNodes);
+        ws.onmessage = (e) => {
+          try {
+            const { event, data } = JSON.parse(e.data);
+            if (event === "sim_start") {
+              // Semua node → THINKING (kuning) saat simulasi mulai
+              setNodes(Array.from({ length: AGENT_COUNT }, (_, i) => ({
+                id: i + 1, decision: "THINKING" as const, confidence: 0,
+                pulsePhase: (i * 0.37) % (Math.PI * 2),
+              })));
+              setEdges([]);
+            } else if (event === "agent_update") {
+              // Update satu node saat satu agent selesai analisa
+              setNodes((prev) => prev.map((n) =>
+                n.id === data.agent_id
+                  ? { ...n, decision: data.decision as LiveNode["decision"], confidence: data.confidence }
+                  : n
+              ));
+            } else if (event === "round_done") {
+              applyOpinions(data.opinions || []);
+            } else if (event === "sim_result") {
+              fetchLatest();
+            }
+          } catch {}
+        };
 
-        // Build edges (agents that agree)
-        const longOps = data.round3_opinions?.filter((o) => o.decision === "LONG") || [];
-        const shortOps = data.round3_opinions?.filter((o) => o.decision === "SHORT") || [];
-        const newEdges: { from: number; to: number; decision: string }[] = [];
-        for (let i = 0; i < longOps.length; i++)
-          for (let j = i + 1; j < longOps.length; j++)
-            newEdges.push({ from: longOps[i].agent_id, to: longOps[j].agent_id, decision: "LONG" });
-        for (let i = 0; i < shortOps.length; i++)
-          for (let j = i + 1; j < shortOps.length; j++)
-            newEdges.push({ from: shortOps[i].agent_id, to: shortOps[j].agent_id, decision: "SHORT" });
-        setEdges(newEdges);
+        ws.onclose = () => setTimeout(connect, 3000);
+        ws.onerror = () => ws.close();
       } catch {}
     };
 
-    fetch_();
-    const iv = setInterval(fetch_, 10000);
+    connect();
+    return () => { wsRef.current?.close(); wsRef.current = null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Polling fallback setiap 15s (jaga-jaga jika WS terputus)
+  useEffect(() => {
+    fetchLatest();
+    const iv = setInterval(fetchLatest, 15000);
     return () => clearInterval(iv);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useGSAP(() => {
