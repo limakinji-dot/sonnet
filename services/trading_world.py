@@ -259,6 +259,8 @@ class AgentOpinion:
             return f"[{self.agent_name}] NO TRADE — {self.reason[:100]}"
         return (f"[{self.agent_name}] {self.decision} entry={self.entry} "
                 f"tp1={self.tp1} sl={self.sl} conf={self.confidence}% | {self.reason[:80]}")
+
+
 @dataclass
 class ConsensusResult:
     simulation_id: str
@@ -292,18 +294,25 @@ class ConsensusResult:
 # ---------------------------------------------------------------------------
 
 def _make_headers(token: str, chat_id: str = "") -> dict:
+    import datetime as _dt
+    # timezone header harus sama format dengan browser: "Tue May 06 2026 16:06:57 GMT+0700"
+    # Kita kirim UTC offset +0000 (server Railway biasanya UTC)
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+    tz_str  = now_utc.strftime("%a %b %d %Y %H:%M:%S GMT+0000")
+
     h = {
-        "Accept": "application/json",
-        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
         "Content-Type": "application/json",
         "source": "web",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
         "Origin": "https://chat.qwen.ai",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "Version": "0.2.7",
+        "Version": "0.2.45",   # fix: was "0.2.7" — browser sends "0.2.45"
         "bx-v": "2.5.36",
+        "timezone": tz_str,    # fix: wajib ada di getstsToken request
         "Authorization": f"Bearer {token}",
         "X-Request-Id": str(uuid.uuid4()),
     }
@@ -311,6 +320,8 @@ def _make_headers(token: str, chat_id: str = "") -> dict:
         h["Referer"] = f"https://chat.qwen.ai/c/{chat_id}"
         h["x-accel-buffering"] = "no"
     return h
+
+
 async def _buat_chat(client: httpx.AsyncClient, token: str, model: str) -> Optional[str]:
     """Buat chat baru, return chat_id."""
     payload = {
@@ -336,6 +347,8 @@ async def _buat_chat(client: httpx.AsyncClient, token: str, model: str) -> Optio
     except Exception as e:
         logger.warning(f"buat_chat error: {e}")
         return None
+
+
 async def _hapus_chat(client: httpx.AsyncClient, token: str, chat_id: str):
     """Hapus chat setelah selesai."""
     try:
@@ -346,11 +359,14 @@ async def _hapus_chat(client: httpx.AsyncClient, token: str, chat_id: str):
         )
     except Exception:
         pass
+
+
 async def _upload_one_chart(
     client: httpx.AsyncClient,
     token: str,
     image_b64: str,
     filename: str,
+    chat_id: str = "",          # fix: perlu untuk Referer header di getstsToken
 ) -> Optional[dict]:
     """
     Upload satu chart ke Qwen OSS via 2-step:
@@ -361,12 +377,12 @@ async def _upload_one_chart(
     from datetime import datetime, timezone
 
     def _oss_sign(ak_id, ak_secret, sts_token, method, host, path, region, content_type):
-        """Generate OSS4-HMAC-SHA256 Authorization + related headers (Alibaba OSS v4)."""
+        """Generate OSS4-HMAC-SHA256 Authorization + related headers."""
         now          = datetime.now(timezone.utc)
         date_str     = now.strftime("%Y%m%d")
         datetime_str = now.strftime("%Y%m%dT%H%M%SZ")
 
-        # OSS v4 canonical headers: content-type + host + x-oss-* sorted alphabetically
+        signed_headers   = "content-type;host;x-oss-content-sha256;x-oss-date;x-oss-security-token"
         canonical_headers = (
             f"content-type:{content_type}\n"
             f"host:{host}\n"
@@ -374,15 +390,12 @@ async def _upload_one_chart(
             f"x-oss-date:{datetime_str}\n"
             f"x-oss-security-token:{sts_token}\n"
         )
-        # AdditionalHeaders = extra non-standard headers being signed (none here)
-        additional_headers = ""
-
         canonical_request = "\n".join([
             method.upper(),
             "/" + path,
-            "",               # empty query string
-            canonical_headers,  # already ends with \n → blank line before next field
-            additional_headers,
+            "",  # empty query string
+            canonical_headers,
+            signed_headers,
             "UNSIGNED-PAYLOAD",
         ])
 
@@ -404,9 +417,9 @@ async def _upload_one_chart(
         k = _hmac_sha256(k, "aliyun_v4_request")
         signature = _hmac.new(k, string_to_sign.encode(), hashlib.sha256).hexdigest()
 
-        # OSS v4 format: NO SignedHeaders field — pakai AdditionalHeaders (omit kalau kosong)
         authorization = (
             f"OSS4-HMAC-SHA256 Credential={ak_id}/{credential_scope},"
+            f"SignedHeaders={signed_headers},"
             f"Signature={signature}"
         )
         return {
@@ -421,15 +434,18 @@ async def _upload_one_chart(
         image_bytes = base64.b64decode(image_b64)
         filesize    = len(image_bytes)
 
-        # Step 1 — minta STS credentials
+        # Step 1 — minta STS credentials (wajib pakai chat_id agar Referer header ada)
         sts_resp = await client.post(
             f"{BASE_URL}/api/v2/files/getstsToken",
             json={"filename": filename, "filesize": filesize, "filetype": "image"},
-            headers=_make_headers(token),
+            headers=_make_headers(token, chat_id),   # fix: dulu _make_headers(token) — tanpa Referer!
             timeout=30,
         )
         if sts_resp.status_code != 200:
-            logger.warning(f"getstsToken failed {sts_resp.status_code} for {filename}")
+            logger.warning(
+                f"getstsToken failed HTTP {sts_resp.status_code} for {filename} — "
+                f"body: {sts_resp.text[:300]}"
+            )
             return None
 
         sts        = sts_resp.json().get("data", {})
@@ -437,23 +453,23 @@ async def _upload_one_chart(
         ak_secret  = sts.get("access_key_secret", "")
         sts_token  = sts.get("security_token", "")
         file_id    = sts.get("file_id", "")
-        file_path  = sts.get("file_path", "")
+        file_path  = sts.get("file_path", "")   # "user_id/file_id_filename.png"
         bucketname = sts.get("bucketname", "qwen-webui-prod")
         endpoint   = sts.get("endpoint", "oss-accelerate.aliyuncs.com")
         region_raw = sts.get("region", "oss-ap-southeast-1")
-        # file_url = presigned download URL (GET) — BUKAN untuk upload
 
         if not all([ak_id, ak_secret, sts_token, file_id, file_path]):
             logger.warning(f"getstsToken: incomplete credentials for {filename}")
             return None
 
-        # region di credential scope tanpa prefix "oss-"
-        region  = region_raw.removeprefix("oss-") if region_raw.startswith("oss-") else region_raw
-        host    = f"{bucketname}.{endpoint}"
-        put_url = f"https://{host}/{file_path}"
+        # region di credential scope TIDAK pakai prefix "oss-"
+        region = region_raw.removeprefix("oss-") if region_raw.startswith("oss-") else region_raw
 
-        # Step 2 — sign manual dengan STS credentials, PUT ke clean URL (tanpa query params)
+        host       = f"{bucketname}.{endpoint}"
+        put_url    = f"https://{host}/{file_path}"
         put_headers = _oss_sign(ak_id, ak_secret, sts_token, "PUT", host, file_path, region, "image/png")
+
+        # Step 2 — PUT ke OSS dengan signed headers
         put_resp = await client.put(
             put_url,
             content=image_bytes,
@@ -461,7 +477,10 @@ async def _upload_one_chart(
             timeout=60,
         )
         if put_resp.status_code != 200:
-            logger.warning(f"OSS PUT failed {put_resp.status_code} for {filename}: {put_resp.text[:200]}")
+            logger.warning(
+                f"OSS PUT failed HTTP {put_resp.status_code} for {filename}: "
+                f"{put_resp.text[:300]}"
+            )
             return None
 
         print(f"  [World 📸 upload] {filename} → {file_id[:8]}... OK")
@@ -485,20 +504,25 @@ async def _upload_one_chart(
     except Exception as e:
         logger.warning(f"_upload_one_chart error ({filename}): {e}")
         return None
+
+
 async def _upload_charts(
     client: httpx.AsyncClient,
     token: str,
     charts: Dict[str, str],
+    chat_id: str = "",           # fix: diteruskan ke _upload_one_chart untuk Referer
 ) -> List[dict]:
     """Upload semua chart paralel, return list file info (hanya yang berhasil)."""
     if not charts:
         return []
     tasks = [
-        _upload_one_chart(client, token, b64, f"chart_{tf}.png")
+        _upload_one_chart(client, token, b64, f"chart_{tf}.png", chat_id=chat_id)
         for tf, b64 in charts.items()
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return [r for r in results if isinstance(r, dict)]
+
+
 async def _kirim_pesan(
     client: httpx.AsyncClient,
     token: str,
@@ -521,7 +545,7 @@ async def _kirim_pesan(
     # Upload charts ke OSS dulu kalau ada
     uploaded_files: List[dict] = []
     if charts:
-        uploaded_files = await _upload_charts(client, token, charts)
+        uploaded_files = await _upload_charts(client, token, charts, chat_id=chat_id)  # fix: teruskan chat_id
         if uploaded_files:
             print(f"  [World 📸] {len(uploaded_files)}/{len(charts)} chart(s) uploaded OK")
         else:
@@ -626,6 +650,8 @@ async def _kirim_pesan(
         print(f"  [World ⚠️  answer EMPTY] — think={len(think_buf)} chars, reply={len(full_reply)} chars")
 
     return full_reply if full_reply.strip() else None
+
+
 # ---------------------------------------------------------------------------
 # Agent think — buat chat → kirim → hapus (full lifecycle per call)
 # ---------------------------------------------------------------------------
@@ -858,6 +884,8 @@ def _weighted_vote(opinions: List[AgentOpinion]) -> dict:
         "details": details,
         "winner":  max(scores, key=scores.get),
     }
+
+
 def _aggregate_levels(opinions: List[AgentOpinion], decision: str) -> dict:
     weight_map = {p["id"]: p["weight"] for p in AGENT_PERSONAS}
     matching   = [o for o in opinions if o.decision == decision and o.entry is not None]
@@ -876,8 +904,12 @@ def _aggregate_levels(opinions: List[AgentOpinion], decision: str) -> dict:
         "tp_max": wavg([(o.tp_max, weight_map.get(o.agent_id, 1.0)) for o in matching]),
         "sl":     wavg([(o.sl,     weight_map.get(o.agent_id, 1.0)) for o in matching]),
     }
+
+
 def _build_room_context(opinions: List[AgentOpinion]) -> str:
     return "\n".join(op.summary() for op in opinions)
+
+
 def _build_narrative(symbol, price, r1, r2, r3, vote, final, levels, n_tokens) -> str:
     lines = [
         f"# Trading World — {symbol}",
@@ -1065,5 +1097,7 @@ class TradingWorldSimulation:
 
     async def close(self):
         pass  # httpx client dibuat per-call, tidak ada yang perlu di-close
+
+
 # Singleton
 trading_world = TradingWorldSimulation()
