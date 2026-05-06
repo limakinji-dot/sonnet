@@ -17,7 +17,7 @@ import time
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from typing import Optional, List
 
-from services.trading_world import trading_world
+from services.trading_world import trading_world, AGENT_PERSONAS
 from services.ws_manager import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -59,14 +59,14 @@ async def run_simulation(request: Request):
         return {"ok": False, "error": "candles_by_tf required"}
     if current_price <= 0:
         return {"ok": False, "error": "current_price required"}
-    if not trading_world.agents:
+    if not trading_world.tokens:
         return {"ok": False, "error": "No agents loaded. Set QWEN_TOKEN_1..5"}
 
     # Broadcast start event
     await ws_manager.broadcast("sim_start", {
         "symbol": symbol,
         "current_price": current_price,
-        "agent_count": len(trading_world.agents),
+        "agent_count": len(AGENT_PERSONAS),
     })
 
     # Run simulation
