@@ -432,19 +432,32 @@ async def _upload_one_chart(
             logger.warning(f"getstsToken failed {sts_resp.status_code} for {filename}")
             return None
 
-        sts      = sts_resp.json().get("data", {})
-        file_id  = sts.get("file_id", "")
-        # file_url adalah presigned URL lengkap — tinggal PUT, tanpa perlu signing manual
-        file_url = sts.get("file_url", "")
+        sts        = sts_resp.json().get("data", {})
+        ak_id      = sts.get("access_key_id", "")
+        ak_secret  = sts.get("access_key_secret", "")
+        sts_token  = sts.get("security_token", "")
+        file_id    = sts.get("file_id", "")
+        file_path  = sts.get("file_path", "")
+        bucketname = sts.get("bucketname", "qwen-webui-prod")
+        endpoint   = sts.get("endpoint", "oss-accelerate.aliyuncs.com")
+        region_raw = sts.get("region", "oss-ap-southeast-1")
+        # file_url = presigned download URL (GET) — BUKAN untuk upload
 
-        if not all([file_id, file_url]):
-            logger.warning(f"getstsToken: incomplete data for {filename}")
+        if not all([ak_id, ak_secret, sts_token, file_id, file_path]):
+            logger.warning(f"getstsToken: incomplete credentials for {filename}")
             return None
 
-        # Step 2 — PUT langsung ke presigned URL (auth sudah ada di query params)
+        # region di credential scope tanpa prefix "oss-"
+        region  = region_raw.removeprefix("oss-") if region_raw.startswith("oss-") else region_raw
+        host    = f"{bucketname}.{endpoint}"
+        put_url = f"https://{host}/{file_path}"
+
+        # Step 2 — sign manual dengan STS credentials, PUT ke clean URL (tanpa query params)
+        put_headers = _oss_sign(ak_id, ak_secret, sts_token, "PUT", host, file_path, region, "image/png")
         put_resp = await client.put(
-            file_url,
+            put_url,
             content=image_bytes,
+            headers=put_headers,
             timeout=60,
         )
         if put_resp.status_code != 200:
@@ -466,7 +479,7 @@ async def _upload_one_chart(
             "name":       filename,
             "size":       filesize,
             "status":     "uploaded",
-            "url":        file_url,
+            "url":        put_url,
             "showType":   "image",
         }
     except Exception as e:
