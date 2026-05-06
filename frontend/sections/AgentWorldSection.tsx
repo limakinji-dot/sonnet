@@ -38,10 +38,15 @@ interface LiveNode {
   pulsePhase: number;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Mini Neural Canvas
-// Now accepts width/height props (responsive) + DPR scaling (HD/Retina)
-// ─────────────────────────────────────────────────────────────────────────────
+const AGENTS_META = [
+  { id: 1,  short: "Sniper"     }, { id: 2,  short: "Hawk"       }, { id: 3,  short: "Glacier"    },
+  { id: 4,  short: "Shadow"     }, { id: 5,  short: "Contrarian" }, { id: 6,  short: "Phoenix"    },
+  { id: 7,  short: "D.Advocate" }, { id: 8,  short: "Fader"      }, { id: 9,  short: "Quant"      },
+  { id: 10, short: "Statist."   }, { id: 11, short: "Engineer"   }, { id: 12, short: "Macro"      },
+  { id: 13, short: "Oracle"     }, { id: 14, short: "Architect"  }, { id: 15, short: "Scalper"    },
+  { id: 16, short: "Bullet"     }, { id: 17, short: "Pulse"      }, { id: 18, short: "Sentinel"   },
+  { id: 19, short: "Alchemist"  }, { id: 20, short: "Veteran"    },
+];
 
 function MiniNeuralCanvas({
   nodes,
@@ -63,7 +68,6 @@ function MiniNeuralCanvas({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // ── DPR-aware resolution — fixes blur on Retina & correct size on desktop ──
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     canvas.width  = Math.round(width  * dpr);
     canvas.height = Math.round(height * dpr);
@@ -77,43 +81,89 @@ function MiniNeuralCanvas({
       const time = t * 0.001;
       ctx.clearRect(0, 0, width, height);
 
-      // Edges
+      // ── Edges — identical to world page ──────────────────────────────────
       for (const edge of edges) {
         const fp = positions[edge.from - 1]; const tp = positions[edge.to - 1];
         if (!fp || !tp) continue;
         const isL = edge.decision === "LONG"; const rgb = isL ? "74,222,128" : "248,113,113";
-        const prog = (time * 0.5 + edge.from * 0.07) % 1;
-        const px = fp.x + (tp.x - fp.x) * prog; const py = fp.y + (tp.y - fp.y) * prog;
-
+        const grad = ctx.createLinearGradient(fp.x, fp.y, tp.x, tp.y);
+        grad.addColorStop(0, `rgba(${rgb},0.04)`);
+        grad.addColorStop(0.5, `rgba(${rgb},0.20)`);
+        grad.addColorStop(1, `rgba(${rgb},0.04)`);
         ctx.beginPath(); ctx.moveTo(fp.x, fp.y); ctx.lineTo(tp.x, tp.y);
-        ctx.strokeStyle = `rgba(${rgb},0.12)`; ctx.lineWidth = 1; ctx.stroke();
-
-        const g = ctx.createRadialGradient(px, py, 0, px, py, 5);
-        g.addColorStop(0, `rgba(${rgb},0.8)`); g.addColorStop(1, `rgba(${rgb},0)`);
-        ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
+        ctx.strokeStyle = grad; ctx.lineWidth = 1.3; ctx.stroke();
+        for (let k = 0; k < 2; k++) {
+          const prog = ((time * 0.5 + edge.from * 0.11 + k * 0.5)) % 1;
+          const px = fp.x + (tp.x - fp.x) * prog; const py = fp.y + (tp.y - fp.y) * prog;
+          const g = ctx.createRadialGradient(px, py, 0, px, py, 7);
+          g.addColorStop(0, `rgba(${rgb},${k === 0 ? 0.85 : 0.4})`); g.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
+        }
       }
 
-      // Nodes
+      // ── Nodes — identical to world page ──────────────────────────────────
       nodes.forEach((node, i) => {
         const p = positions[i]; if (!p) return;
-        const pulse = Math.sin(time * 2.4 + node.pulsePhase) * 0.5 + 0.5;
-        let rgb = "255,255,255"; let alpha = 0.12 + pulse * 0.08; let r = 4;
+        const agent = AGENTS_META[i];
+        const pulse = Math.sin(time * 2.3 + node.pulsePhase) * 0.5 + 0.5;
+        const isL = node.decision === "LONG";
+        const isS = node.decision === "SHORT";
+        const isNT = node.decision === "NO TRADE";
+        const isThinking = node.decision === "THINKING";
 
-        if (node.decision === "THINKING") { rgb = "212,168,71"; alpha = 0.5 + pulse * 0.5; r = 4 + pulse * 2; }
-        else if (node.decision === "LONG")     { rgb = "74,222,128";  alpha = 0.5 + (node.confidence / 100) * 0.5; r = 4 + (node.confidence / 100) * 4; }
-        else if (node.decision === "SHORT")    { rgb = "248,113,113"; alpha = 0.5 + (node.confidence / 100) * 0.5; r = 4 + (node.confidence / 100) * 4; }
-        else if (node.decision === "NO TRADE") { rgb = "90,100,120"; alpha = 0.2; r = 3; }
+        let rgb = "160,185,210"; let alpha = 0.08 + pulse * 0.07; let r = 5;
+        if (isThinking) { rgb = "212,168,71"; alpha = 0.5 + pulse * 0.5; r = 4 + pulse * 2; }
+        else if (isL)   { rgb = "74,222,128";  alpha = 0.5 + (node.confidence / 100) * 0.5; r = 5 + (node.confidence / 100) * 7; }
+        else if (isS)   { rgb = "248,113,113"; alpha = 0.5 + (node.confidence / 100) * 0.5; r = 5 + (node.confidence / 100) * 7; }
+        else if (isNT)  { rgb = "65,85,108"; alpha = 0.22; r = 4; }
 
-        const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 4);
-        glow.addColorStop(0, `rgba(${rgb},${alpha * 0.4})`); glow.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.beginPath(); ctx.arc(p.x, p.y, r * 4, 0, Math.PI * 2); ctx.fillStyle = glow; ctx.fill();
+        // Outer glow
+        const glowR = r * 5;
+        const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowR);
+        glow.addColorStop(0, `rgba(${rgb},${alpha * 0.35})`); glow.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.beginPath(); ctx.arc(p.x, p.y, glowR, 0, Math.PI * 2); ctx.fillStyle = glow; ctx.fill();
 
-        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fillStyle = `rgba(${rgb},${alpha})`; ctx.fill();
+        // Main dot
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${rgb},${alpha})`; ctx.fill();
 
-        if (node.decision === "THINKING") {
+        // Inner bright core
+        ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.42, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${rgb},${Math.min(1, alpha + 0.35)})`; ctx.fill();
+
+        // Confidence arc (LONG/SHORT only)
+        if ((isL || isS) && node.confidence > 0) {
+          const arcEnd = -Math.PI / 2 + (node.confidence / 100) * Math.PI * 2;
+          ctx.beginPath(); ctx.arc(p.x, p.y, r + 3.5, -Math.PI / 2, arcEnd);
+          ctx.strokeStyle = `rgba(${rgb},0.55)`; ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.stroke();
+        }
+
+        // Thinking ring
+        if (isThinking) {
           ctx.beginPath(); ctx.arc(p.x, p.y, r + 3 + pulse * 3, 0, Math.PI * 2);
           ctx.strokeStyle = `rgba(212,168,71,${0.3 - pulse * 0.25})`; ctx.lineWidth = 0.8; ctx.stroke();
         }
+
+        // ── Agent label (same style as world page) ────────────────────────
+        const shortName = agent?.short ?? `A${node.id}`;
+        const agentNum  = `A${String(node.id).padStart(2, "0")}`;
+        const labelY    = p.y + r + 19;
+        let labelAlpha = 0.22;
+        if (isL || isS)  labelAlpha = 0.70;
+        else if (isNT)   labelAlpha = 0.32;
+
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.font = `bold 11px 'Courier New', monospace`;
+        if (isL)       ctx.fillStyle = `rgba(74,222,128,${labelAlpha})`;
+        else if (isS)  ctx.fillStyle = `rgba(248,113,113,${labelAlpha})`;
+        else           ctx.fillStyle = `rgba(200,210,225,${labelAlpha})`;
+        ctx.fillText(shortName, p.x, labelY);
+
+        ctx.font = `8px 'Courier New', monospace`;
+        ctx.fillStyle = `rgba(255,255,255,${labelAlpha * 0.45})`;
+        ctx.fillText(agentNum, p.x, labelY + 12);
+        ctx.restore();
       });
 
       rafRef.current = requestAnimationFrame(draw);
@@ -122,7 +172,6 @@ function MiniNeuralCanvas({
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafRef.current);
-  // Re-run whenever size or data changes
   }, [nodes, edges, width, height]);
 
   return <canvas ref={canvasRef} style={{ display: "block" }} />;
