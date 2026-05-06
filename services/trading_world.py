@@ -369,12 +369,12 @@ async def _upload_one_chart(
     from datetime import datetime, timezone
 
     def _oss_sign(ak_id, ak_secret, sts_token, method, host, path, region, content_type):
-        """Generate OSS4-HMAC-SHA256 Authorization + related headers."""
+        """Generate OSS4-HMAC-SHA256 Authorization + related headers (Alibaba OSS v4)."""
         now          = datetime.now(timezone.utc)
         date_str     = now.strftime("%Y%m%d")
         datetime_str = now.strftime("%Y%m%dT%H%M%SZ")
 
-        signed_headers   = "content-type;host;x-oss-content-sha256;x-oss-date;x-oss-security-token"
+        # OSS v4 canonical headers: content-type + host + x-oss-* sorted alphabetically
         canonical_headers = (
             f"content-type:{content_type}\n"
             f"host:{host}\n"
@@ -382,12 +382,15 @@ async def _upload_one_chart(
             f"x-oss-date:{datetime_str}\n"
             f"x-oss-security-token:{sts_token}\n"
         )
+        # AdditionalHeaders = extra non-standard headers being signed (none here)
+        additional_headers = ""
+
         canonical_request = "\n".join([
             method.upper(),
             "/" + path,
-            "",  # empty query string
-            canonical_headers,
-            signed_headers,
+            "",               # empty query string
+            canonical_headers,  # already ends with \n → blank line before next field
+            additional_headers,
             "UNSIGNED-PAYLOAD",
         ])
 
@@ -409,9 +412,9 @@ async def _upload_one_chart(
         k = _hmac_sha256(k, "aliyun_v4_request")
         signature = _hmac.new(k, string_to_sign.encode(), hashlib.sha256).hexdigest()
 
+        # OSS v4 format: NO SignedHeaders field — pakai AdditionalHeaders (omit kalau kosong)
         authorization = (
             f"OSS4-HMAC-SHA256 Credential={ak_id}/{credential_scope},"
-            f"SignedHeaders={signed_headers},"
             f"Signature={signature}"
         )
         return {
