@@ -26,6 +26,7 @@ PUBLIC_GET_PATHS = {
     "/api/market/contracts",
     "/api/market/tickers",
     "/sim/latest",       # FIX: public — dipoll oleh homepage & /world page
+    "/sim/current",      # FIX: public — state sim yang sedang berjalan (late joiner fix)
     "/sim/agents",       # FIX: public — status agent
     "/sim/log",          # FIX: public — riwayat simulasi
 }
