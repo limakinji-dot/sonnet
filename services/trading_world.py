@@ -960,7 +960,7 @@ def _build_narrative(symbol, price, r1, r2, r3, vote, final, levels, n_tokens) -
 # Main Simulation World
 # ---------------------------------------------------------------------------
 
-LATEST_SIM_PATH = os.getenv("LATEST_SIM_PATH", "/tmp/latest_sim.json")
+LATEST_SIM_PATH = os.getenv("LATEST_SIM_PATH", os.path.join(os.getenv("DB_DIR", "/app/data"), "latest_sim.json"))
 
 
 class TradingWorldSimulation:
@@ -1011,8 +1011,11 @@ class TradingWorldSimulation:
     def _persist_latest(self, result: ConsensusResult):
         """Simpan hasil simulasi terbaru ke file JSON agar survive restart."""
         try:
+            import pathlib
+            pathlib.Path(LATEST_SIM_PATH).parent.mkdir(parents=True, exist_ok=True)
             with open(LATEST_SIM_PATH, "w") as f:
                 json.dump(result.to_dict(), f)
+            print(f"[SimWorld] Persisted to {LATEST_SIM_PATH}")
         except Exception as e:
             logger.warning(f"[SimWorld] Could not persist: {e}")
 
