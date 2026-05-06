@@ -241,6 +241,7 @@ export default function WorldPage() {
   const [result, setResult] = useState<SimResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<number>(0);
+  const [liveRound, setLiveRound] = useState<number>(0); // round yang sedang berjalan
   const [nodes, setNodes] = useState<NodeState[]>(
     AGENTS.map((a, i) => ({ id: a.id, decision: "IDLE", confidence: 0, pulsePhase: (i * 0.37) % (Math.PI * 2) }))
   );
@@ -248,6 +249,7 @@ export default function WorldPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 700, h: 460 });
   const containerRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // Canvas responsive sizing
   useEffect(() => {
@@ -260,6 +262,88 @@ export default function WorldPage() {
     });
     if (containerRef.current) obs.observe(containerRef.current);
     return () => obs.disconnect();
+  }, []);
+
+  // ── WebSocket realtime ────────────────────────────────────────────────────
+  useEffect(() => {
+    // Derive WS URL: gunakan env var atau fallback dari API rewrite base
+    const wsBase = process.env.NEXT_PUBLIC_WS_URL
+      || "wss://web-production-e78a1.up.railway.app";
+    const wsUrl = `${wsBase}/sim/ws`;
+
+    const connect = () => {
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data);
+            const { event, data } = msg;
+
+            if (event === "sim_start") {
+              // Semua agent → THINKING (kuning)
+              setLiveRound(1);
+              setNodes(AGENTS.map((a, i) => ({
+                id: a.id, decision: "IDLE" as const, confidence: 0,
+                pulsePhase: (i * 0.37) % (Math.PI * 2),
+              })));
+              setEdges([]);
+            }
+
+            else if (event === "agent_update") {
+              // Satu agent selesai — update node-nya saja
+              setNodes(prev => prev.map(n =>
+                n.id === data.agent_id
+                  ? { ...n, decision: data.decision as NodeState["decision"], confidence: data.confidence }
+                  : n
+              ));
+            }
+
+            else if (event === "round_done") {
+              // Seluruh round selesai — update semua node + edges
+              setLiveRound(data.round_num + 1);
+              const ops: AgentOpinion[] = data.opinions || [];
+              setNodes(AGENTS.map((a, i) => {
+                const op = ops.find(o => o.agent_id === a.id);
+                return { id: a.id, decision: (op?.decision as NodeState["decision"]) || "IDLE",
+                         confidence: op?.confidence || 0, pulsePhase: (i * 0.37) % (Math.PI * 2) };
+              }));
+              const longs = ops.filter(o => o.decision === "LONG");
+              const shorts = ops.filter(o => o.decision === "SHORT");
+              const newEdges: EdgeState[] = [];
+              for (let i = 0; i < longs.length; i++)
+                for (let j = i + 1; j < longs.length; j++)
+                  newEdges.push({ from: longs[i].agent_id, to: longs[j].agent_id, decision: "LONG" });
+              for (let i = 0; i < shorts.length; i++)
+                for (let j = i + 1; j < shorts.length; j++)
+                  newEdges.push({ from: shorts[i].agent_id, to: shorts[j].agent_id, decision: "SHORT" });
+              setEdges(newEdges);
+            }
+
+            else if (event === "sim_result") {
+              // Simulasi selesai — fetch data lengkap
+              setLiveRound(0);
+              fetchLatest();
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          // Auto reconnect setelah 3 detik
+          setTimeout(connect, 3000);
+        };
+
+        ws.onerror = () => ws.close();
+      } catch {}
+    };
+
+    connect();
+    return () => {
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchLatest = useCallback(async () => {
@@ -307,7 +391,7 @@ export default function WorldPage() {
     result ? [result.round1_opinions, result.round2_opinions, result.round3_opinions][round - 1]?.find((o) => o.agent_id === agentId) : null;
 
   // Auto-detect current round from backend data (no manual tab needed)
-  const activeRound = result
+  const activeRound = liveRound > 0 ? liveRound : result
     ? (result.round3_opinions?.length ? 3 : result.round2_opinions?.length ? 2 : 1)
     : 0;
 
