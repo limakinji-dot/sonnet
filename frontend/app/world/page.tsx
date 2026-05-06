@@ -355,12 +355,39 @@ export default function WorldPage() {
     return () => obs.disconnect();
   }, []);
 
+  // ── Fetch current in-progress simulation (untuk late joiners / mobile) ──────
+  const fetchCurrent = useCallback(async () => {
+    try {
+      const API = typeof window !== "undefined" ? window.location.origin : "";
+      const res = await fetch(`${API}/sim/current`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data?.is_running) return;
+      // Set round yang sedang berjalan
+      setLiveRound(data.round_num || 1);
+      // Apply state agent yang sudah masuk — yang belum vote tampil THINKING
+      const ops: AgentOpinion[] = data.agent_opinions || [];
+      setNodes(AGENTS.map((a, i) => {
+        const op = ops.find(o => o.agent_id === a.id);
+        return { id: a.id, decision: op ? (op.decision as NodeState["decision"]) : "IDLE", confidence: op?.confidence || 0, pulsePhase: (i * 0.37) % (Math.PI * 2) };
+      }));
+      const longs = ops.filter(o => o.decision === "LONG"); const shorts = ops.filter(o => o.decision === "SHORT");
+      const newEdges: EdgeState[] = [];
+      for (let i = 0; i < longs.length; i++) for (let j = i + 1; j < longs.length; j++) newEdges.push({ from: longs[i].agent_id, to: longs[j].agent_id, decision: "LONG" });
+      for (let i = 0; i < shorts.length; i++) for (let j = i + 1; j < shorts.length; j++) newEdges.push({ from: shorts[i].agent_id, to: shorts[j].agent_id, decision: "SHORT" });
+      setEdges(newEdges);
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "https://web-production-e78a1.up.railway.app";
     const wsUrl = BACKEND.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://") + "/sim/ws";
     const connect = () => {
       try {
         const ws = new WebSocket(wsUrl); wsRef.current = ws;
+        // ── Sync state saat pertama konek (fix: late joiner / mobile) ──────
+        ws.onopen = () => { fetchCurrent(); };
         ws.onmessage = (e) => {
           try {
             const { event, data } = JSON.parse(e.data);
