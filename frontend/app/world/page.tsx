@@ -270,23 +270,21 @@ export default function WorldPage() {
       const API = typeof window !== "undefined" ? window.location.origin : "";
       const res = await fetch(`${API}/sim/latest`);
       if (!res.ok) { setLoading(false); return; }
-      const data = await res.json();
-      // Backend returns {ok: false, error: "..."} when no simulation yet
-      if (!data.ok && data.error) { setLoading(false); return; }
-      setResult(data as SimResult);
+      const data: SimResult = await res.json();
+      setResult(data);
       setLastUpdated(data.timestamp);
       setLoading(false);
 
       // Build nodes from round3
-      const opinions = data.round3_opinions || [];
+      const opinions: AgentOpinion[] = data.round3_opinions || [];
       setNodes(AGENTS.map((a, i) => {
-        const op = opinions.find((o) => o.agent_id === a.id);
+        const op = opinions.find((o: AgentOpinion) => o.agent_id === a.id);
         return { id: a.id, decision: (op?.decision as NodeState["decision"]) || "IDLE", confidence: op?.confidence || 0, pulsePhase: (i * 0.37) % (Math.PI * 2) };
       }));
 
       // Build edges
-      const longOps = opinions.filter((o) => o.decision === "LONG");
-      const shortOps = opinions.filter((o) => o.decision === "SHORT");
+      const longOps = opinions.filter((o: AgentOpinion) => o.decision === "LONG");
+      const shortOps = opinions.filter((o: AgentOpinion) => o.decision === "SHORT");
       const newEdges: EdgeState[] = [];
       for (let i = 0; i < longOps.length; i++)
         for (let j = i + 1; j < longOps.length; j++)
@@ -309,9 +307,9 @@ export default function WorldPage() {
     result ? [result.round1_opinions, result.round2_opinions, result.round3_opinions][round - 1]?.find((o) => o.agent_id === agentId) : null;
 
   const roundOpinions = result
-    ? (roundView === "r1" ? result.round1_opinions
+    ? roundView === "r1" ? result.round1_opinions
     : roundView === "r2" ? result.round2_opinions
-    : result.round3_opinions) ?? []
+    : result.round3_opinions
     : [];
 
   const vote = result?.vote_breakdown;
