@@ -170,6 +170,20 @@ async def simulation_ws(ws: WebSocket):
 # /sim/latest — hasil simulasi terbaru dari log (public, no auth)
 # ---------------------------------------------------------------------------
 
+@router.get("/current")
+async def get_current():
+    """
+    State simulasi yang sedang berjalan (untuk late joiner / mobile).
+    Dipanggil oleh /world page saat WebSocket pertama konek via fetchCurrent().
+    Public — tidak perlu login.
+    """
+    return {
+        "is_running":      trading_world.is_running,
+        "round_num":       trading_world.current_round,
+        "agent_opinions":  trading_world.current_opinions,
+    }
+
+
 @router.get("/latest")
 async def get_latest():
     """
