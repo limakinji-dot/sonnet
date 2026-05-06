@@ -259,8 +259,6 @@ class AgentOpinion:
             return f"[{self.agent_name}] NO TRADE — {self.reason[:100]}"
         return (f"[{self.agent_name}] {self.decision} entry={self.entry} "
                 f"tp1={self.tp1} sl={self.sl} conf={self.confidence}% | {self.reason[:80]}")
-
-
 @dataclass
 class ConsensusResult:
     simulation_id: str
@@ -313,8 +311,6 @@ def _make_headers(token: str, chat_id: str = "") -> dict:
         h["Referer"] = f"https://chat.qwen.ai/c/{chat_id}"
         h["x-accel-buffering"] = "no"
     return h
-
-
 async def _buat_chat(client: httpx.AsyncClient, token: str, model: str) -> Optional[str]:
     """Buat chat baru, return chat_id."""
     payload = {
@@ -340,8 +336,6 @@ async def _buat_chat(client: httpx.AsyncClient, token: str, model: str) -> Optio
     except Exception as e:
         logger.warning(f"buat_chat error: {e}")
         return None
-
-
 async def _hapus_chat(client: httpx.AsyncClient, token: str, chat_id: str):
     """Hapus chat setelah selesai."""
     try:
@@ -352,8 +346,6 @@ async def _hapus_chat(client: httpx.AsyncClient, token: str, chat_id: str):
         )
     except Exception:
         pass
-
-
 async def _upload_one_chart(
     client: httpx.AsyncClient,
     token: str,
@@ -453,7 +445,6 @@ async def _upload_one_chart(
         put_resp = await client.put(
             file_url,
             content=image_bytes,
-            headers={"Content-Type": "image/png"},
             timeout=60,
         )
         if put_resp.status_code != 200:
@@ -481,8 +472,6 @@ async def _upload_one_chart(
     except Exception as e:
         logger.warning(f"_upload_one_chart error ({filename}): {e}")
         return None
-
-
 async def _upload_charts(
     client: httpx.AsyncClient,
     token: str,
@@ -497,8 +486,6 @@ async def _upload_charts(
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return [r for r in results if isinstance(r, dict)]
-
-
 async def _kirim_pesan(
     client: httpx.AsyncClient,
     token: str,
@@ -626,8 +613,6 @@ async def _kirim_pesan(
         print(f"  [World ⚠️  answer EMPTY] — think={len(think_buf)} chars, reply={len(full_reply)} chars")
 
     return full_reply if full_reply.strip() else None
-
-
 # ---------------------------------------------------------------------------
 # Agent think — buat chat → kirim → hapus (full lifecycle per call)
 # ---------------------------------------------------------------------------
@@ -860,8 +845,6 @@ def _weighted_vote(opinions: List[AgentOpinion]) -> dict:
         "details": details,
         "winner":  max(scores, key=scores.get),
     }
-
-
 def _aggregate_levels(opinions: List[AgentOpinion], decision: str) -> dict:
     weight_map = {p["id"]: p["weight"] for p in AGENT_PERSONAS}
     matching   = [o for o in opinions if o.decision == decision and o.entry is not None]
@@ -880,12 +863,8 @@ def _aggregate_levels(opinions: List[AgentOpinion], decision: str) -> dict:
         "tp_max": wavg([(o.tp_max, weight_map.get(o.agent_id, 1.0)) for o in matching]),
         "sl":     wavg([(o.sl,     weight_map.get(o.agent_id, 1.0)) for o in matching]),
     }
-
-
 def _build_room_context(opinions: List[AgentOpinion]) -> str:
     return "\n".join(op.summary() for op in opinions)
-
-
 def _build_narrative(symbol, price, r1, r2, r3, vote, final, levels, n_tokens) -> str:
     lines = [
         f"# Trading World — {symbol}",
@@ -1073,7 +1052,5 @@ class TradingWorldSimulation:
 
     async def close(self):
         pass  # httpx client dibuat per-call, tidak ada yang perlu di-close
-
-
 # Singleton
 trading_world = TradingWorldSimulation()
